@@ -1,0 +1,36 @@
+### Example REST (use emacs restclient mode) calls to XTDB HTTP API
+### Start a local database with:
+### docker run --pull=always -tip 6543:3000 ghcr.io/xtdb/xtdb-standalone-ea
+
+# variables
+:url = http://localhost:6543
+
+# Post a product
+POST :url/tx
+Content-Type: application/json
+
+{"txOps": [{"sql": "INSERT INTO products (_id, name, description) VALUES (1, 'Fine leather jacket', 'A fine leather jacket for all pirating needs')"}]}
+
+# query status
+GET :url/status
+
+# query from system txs table
+POST :url/query
+Content-Type: application/json
+
+{"sql": "SELECT * FROM xt.txs"}
+
+# query the product we inserted
+POST :url/query
+Content-Type: application/json
+
+{"sql": "SELECT * FROM products"}
+
+## Post multiple
+POST :url/tx
+Content-Type: application/json
+
+{"txOps": [{"sql": "INSERT INTO products (_id, name, description) VALUES ($1, $2, $3)",
+            "argRows": [[2,"Log from Blammo", "It's big, it's heavy, it's wood"],
+                        [3,"Illudium Q-36 explosive space modulator", "Is that pesky planet in the way of your view of Uranus? Blow it up."],
+                        [4,"Ball", "It's a ball... nothing more to it"]]}]}
