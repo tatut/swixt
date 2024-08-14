@@ -1,4 +1,5 @@
 :- module(swixt, [q/2, q/1, insert/1, insert/2, status/1]).
+:- use_module(library(apply)).
 :- use_module(library(http/http_open)).
 :- use_module(library(http/http_client)).
 :- use_module(library(http/json)).
@@ -39,6 +40,14 @@ where(Fields, FormattedWhereClause) :-
     atomic_list_concat(FieldClauses, ' AND ', FieldClausesJoined),
     format(atom(FormattedWhereClause), ' WHERE ~w', [FieldClausesJoined]).
 
+special_field('_only').
+special_field('_order').
+special_field_pair(Field-_) :- special_field(Field).
+
+%% Partition fields into regular and special control fields
+partition_fields(FieldsIn, ClauseFields, SpecialFields) :-
+    partition(special_field_pair, FieldsIn, SpecialFields, ClauseFields).
+
 format_where(Field- >(V), Out) :-
     format(atom(Out), '~w > ~w', [Field, V]).
 format_where(Field- <(V), Out) :-
@@ -51,15 +60,50 @@ format_where(Field-like(Str), Out) :-
 format_where(Field-not(Clause), Out) :-
     format_where(Field-Clause, Where),
     format(atom(Out), 'NOT (~w)', [Where]).
-
 format_where(Field-Val, Out) :-
     \+ compound(Val),
     format(atom(Out), '~w = ~w', [Field, Val]).
 
+%%%%%%%
+%% Ordering, create an ORDER BY clause from the special '_order' field
+
+order_by(Specials, '') :- \+ memberchk('_order'-_, Specials). % no order special field found, no order by
+order_by(Specials, OrderByClause) :-
+    member('_order'-Order, Specials),
+    order_by_clause(Order, OrderField, OrderDir),
+    format(atom(OrderByClause), ' ORDER BY ~w ~w', [OrderField, OrderDir]).
+
+order_by_clause(F, F, 'ASC') :- atom(F).
+order_by_clause(F-asc, F, 'ASC').
+order_by_clause(F-desc, F, 'DESC').
+
+%%%%%%%
+%% Projection, by default select everything (*). If '_only' is present, then select only
+%% the fields in that list
+
+projection(Specials, '*') :- \+ memberchk('_only'-_, Specials). % no _only special found
+projection(Specials, Projection) :-
+    member('_only'-Fields, Specials),
+    atomic_list_concat(Fields, ',', Projection).
+
+%%%%%%%5
+%% Dict to SQL conversion
+
+dict_sql(Dict, SQL) :-
+    dict_pairs(Dict, Table, Fields),
+    partition_fields(Fields, ClauseFields, SpecialFields),
+    where(ClauseFields, FormattedWhereClause),
+    order_by(SpecialFields, OrderByClause),
+    projection(SpecialFields, Projection),
+    format(atom(SQL),
+           'SELECT ~w FROM ~w~w~w',
+           [Projection, Table, FormattedWhereClause, OrderByClause]).
+
+%%%%%%
+%% The main query interface
+
 q(Candidate, Results) :-
-    dict_pairs(Candidate, Table, Fields),
-    where(Fields, FormattedWhereClause),
-    format(atom(SQL), 'SELECT * FROM ~w~w', [Table, FormattedWhereClause]),
+    dict_sql(Candidate, SQL),
     writeln(query(SQL)),
     query(SQL, Results).
 
