@@ -30,7 +30,28 @@ Content-Type: application/json
 POST :url/tx
 Content-Type: application/json
 
-{"txOps": [{"sql": "INSERT INTO products (_id, name, description) VALUES ($1, $2, $3)",
-            "argRows": [[2,"Log from Blammo", "It's big, it's heavy, it's wood"],
-                        [3,"Illudium Q-36 explosive space modulator", "Is that pesky planet in the way of your view of Uranus? Blow it up."],
-                        [4,"Ball", "It's a ball... nothing more to it"]]}]}
+{"txOps": [{"sql": "INSERT INTO products (_id, name, description, price) VALUES ($1, $2, $3, $4)",
+            "argRows": [[1, "Fine leather jacket", "A fine leather jacket for all pirating needs", 29.95],
+                        [2,"Log from Blammo", "It's big, it's heavy, it's wood", 4.20],
+                        [3,"Illudium Q-36 explosive space modulator", "Is that pesky planet in the way of your view of Uranus? Blow it up.", 42069],
+                        [4,"Ball", "It's a ball... nothing more to it", 7.99]]}]}
+
+## Post customer, order and some order lines
+## order 1 fine leather jacket and 10 balls
+POST :url/tx
+Content-Type: application/json
+
+{"txOps": [{"sql": "INSERT INTO customer (_id, name, address) VALUES ($1,$2,$3)",
+            "argRows": [[1, "Max Feedpressure", {"street": "Somestreet 6", "postalcode": "90210",
+                                                 "country": "FI"}]]},
+           {"sql": "INSERT INTO orders (_id, datetime, customer_id) VALUES ($1,$2,$3)",
+            "argRows": [[1, {"@type": "xt:timestamp", "@value": "2024-08-14T16:40:55.666"}, 1]]},
+           {"sql": "INSERT INTO orderline (_id, order_id, product_id, quantity) VALUES ($1,$2,$3,$4)",
+            "argRows": [[1, 1, 1, 1],
+                        [2, 1, 4, 10]]}]}
+
+## Fetch the order, nesting the orderlines and the product info
+POST :url/query
+Content-Type: application/json
+
+{"sql": "SELECT *, NEST_MANY(SELECT *, NEST_ONE(SELECT p.name,p.price FROM products p WHERE p._id=ol.product_id) as product FROM orderline ol WHERE ol.order_id=o._id) AS orderlines FROM orders o"}
