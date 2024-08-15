@@ -82,8 +82,8 @@ SELECT *,
                         NEST_ONE(SELECT p.name,p.price
                                    FROM products FOR ALL VALID_TIME p
                                   WHERE p._id=ol.product_id
-                                    AND p._valid_to > o._valid_from
-                               ORDER BY p._valid_from DESC LIMIT 1) as product
+                                    AND p._valid_from < o._valid_from
+                                 ORDER BY p._valid_from DESC LIMIT 1) as product
                    FROM orderline ol
                   WHERE ol.order_id=o._id) AS orderlines
   FROM orders o"}
