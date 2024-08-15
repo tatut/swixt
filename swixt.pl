@@ -14,20 +14,28 @@ xt_post(Path, Json, Results) :-
     json_read_dict(Stream, Results, [tag('@type'),default_tag(data)]).
 
 query(Sql, Args, Results) :-
-    args_list(Args, ArgsList),
-    xt_post(query, d{sql: Sql, queryOpts: d{args: ArgsList}}, Results).
+    xt_post(query, d{sql: Sql, queryOpts: d{args: Args}}, Results).
 
 to_arg_ref(N,Ref) :- format(atom(Ref), '$~d', [N]).
 
-insert_into(Table, Fields, ValueRows, Results) :-
+insert_into(Table, Fields, ValueRows, tx{txOps: [tx{sql: SQL, argRows: ValueRows}]}) :-
     atomic_list_concat(Fields, ',', FieldList),
     length(Fields, NumArgs),
     numlist(1, NumArgs, Args),
     maplist(to_arg_ref, Args, ArgRefs),
     atomic_list_concat(ArgRefs, ',', ArgNums),
     format(atom(SQL), 'INSERT INTO ~w (~w) VALUES (~w)', [Table, FieldList, ArgNums]),
-    writeln(insert(SQL)),
-    xt_post(tx, tx{txOps: [tx{sql: SQL, argRows: ValueRows}]}, Results).
+    writeln(insert(SQL)).
+
+insert(Dict) :-
+    insert(Dict, TxOp),
+    xt_post(tx, tx{txOps: [TxOp]}, _Results).
+
+insert(Dict, TxOp) :-
+    dict_pairs(Dict, Table, Fields),
+    pairs_keys(Fields, Ks),
+    pairs_values(Fields, Vs),
+    insert_into(Table, Ks, [Vs], TxOp).
 
 status(Status) :-
     current_prolog_flag(xt_url, BaseUrl),
@@ -35,120 +43,180 @@ status(Status) :-
     http_open(Url, Stream, []),
     json_read_dict(Stream, Status, [tag('@type'),default_tag(xt)]).
 
-%%%%%
-%% Structure to build up args, compound term keeps track of current
-%% arg number and a list of args.
-%% args_list turns the argument structure into a list.
 
-empty_args(args(1,[])).
-args_list(args(_,Args), ArgsRev) :- reverse(Args, ArgsRev).
-arg(ArgVal, ArgRef, args(Cur, Args), args(Next, [ArgVal|Args])) :-
-    succ(Cur, Next),
-    to_arg_ref(Cur, ArgRef).
+%%% State
+% The state of building a SQL query consists of a dict that contains the
+% different parts (projection, table, alias, where clauses, order, etc).
+% Parts like clauses are lists that are prepended to and reversed
+% when finally processed into a full SQL clause and arguments.
+
+new_state(Table, q{alias: [a],
+                   next_alias: b,
+                   args: 1-[],
+                   table: Table,
+                   projection: ['*'],
+                   where: [],
+                   order: ''}).
+
+new_state_with(Table, OldState, KeepFields, State) :-
+    new_state(Table, S0),
+    foldl({OldState}/[Keep, SIn, SOut]>>( get_dict(Keep, OldState, Val),
+                                          put_dict([Keep=Val], SIn,SOut) ),
+          KeepFields, S0, State).
+
+state(S), [S] --> [S].
+state(S0, S1), [S1] --> [S0].
+
+push_state(NewState), [NewState, S] --> [S].
+pop_state(Popped), [S] --> [Popped, S].
+
+debug -->
+    state(S),
+    { writeln(current_state(S)) }.
+
+%% Add new argument, Ref unifies with the number
+arg(Val, Ref) -->
+    state(S0, S1),
+    { get_dict(args, S0, Cur-Args),
+      succ(Cur, Next),
+      to_arg_ref(Cur, Ref),
+      put_dict([args=Next-[Val|Args]], S0, S1)
+    }.
+
+%% Add formatted where fragment
+where_(Fmt, Args) -->
+    state(S0, S1),
+    { get_dict(where, S0, Where),
+      format(atom(SQL), Fmt, Args),
+      put_dict([where=[SQL|Where]], S0, S1) }.
+
+%% Add formatted select fragment
+select_(Fmt, Args) -->
+    state(S0, S1),
+    { get_dict(projection, S0, Proj),
+      format(atom(SQL), Fmt, Args),
+      put_dict([projection=[SQL|Proj]], S0, S1) }.
+
+remove_star -->
+    state(S0, S1),
+    { get_dict(project, S0, Proj),
+      exclude(=('*'), Proj, WithoutStar),
+      put_dict([projection=WithoutStar], S0, S1) }.
+
+pushalias -->
+    state(S0, S1),
+    { _{alias: Alias, next_alias: NewAlias} :< S0,
+      char_code(NewAlias, Code),
+      succ(Code, Code1),
+      char_code(NextAlias, Code1),
+      put_dict([alias=[NewAlias|Alias], next_alias=NextAlias], S0, S1) }.
+
+popalias -->
+    state(S0, S1),
+    { _{alias: [_|Alias]} :< S0,
+      put_dict([alias=Alias], S0, S1) }.
+
+%%%%%%%%
+%% Format state into SQL clause with arguments
+
+to_sql(State, SQL, Args) :-
+    writeln(state(State)),
+    _{alias: [Alias|_], table: Table, projection: ProjRev, where: Where,
+      args: _-ArgsRev} :< State,
+    reverse(ArgsRev, Args),
+    reverse(ProjRev, Proj),
+    writeln(args(Args)),
+    atomic_list_concat(Proj, ', ', Projection),
+    combined_where_clause(Where, WhereClause),
+    format(atom(SQL), 'SELECT ~w FROM ~w ~w ~w', [Projection, Table, Alias, WhereClause]).
+
+combined_where_clause([], '').
+combined_where_clause(Where, SQL) :-
+    length(Where, L), L > 0,
+    atomic_list_concat(Where, ' AND ', CombinedWhere),
+    format(atom(SQL), ' WHERE ~w', [CombinedWhere]).
 
 
 
-%% Partition fields into regular and special control fields
-partition_fields(FieldsIn, ClauseFields, SpecialFields) :-
-    partition(special_field_pair, FieldsIn, SpecialFields, ClauseFields).
-
-%%%%%%%
-%% Where clause generation
-
-where([], '', Args, Args). % no fields, don't emit a WHERE clause
-where(Fields, FormattedWhereClause, ArgsIn, ArgsOut) :-
-    length(Fields, Len), Len > 0,
-    foldl([Field, SQL0^Args0, [Out|SQL0]^Args1]>>format_where(Field, Out, Args0, Args1),
-          Fields, []^ArgsIn, SQLs^ArgsOut),
-    reverse(SQLs, FieldClauses),
-    atomic_list_concat(FieldClauses, ' AND ', FieldClausesJoined),
-    format(atom(FormattedWhereClause), ' WHERE ~w', [FieldClausesJoined]).
+%% Handle a Field-Val pair in dict
+% it might be a where clause, a nested query or a special
 
 special_field('_only').
 special_field('_order').
-special_field_pair(Field-_) :- special_field(Field).
+
+handle([Fv|Fvs]) -->
+    handle(Fv),
+    handle(Fvs).
+
+handle([]) --> [].
+
+handle(Field-Val) -->
+    % Don't handle special fields or nested dictionaries
+    { \+ special_field(Field), \+ is_dict(Val) },
+    where(Field, Val).
+
+handle('_only'->Lst) -->
+    remove_star,
+    state(S0, S1),
+    { put_dict([projection=Lst], S0, S1) }.
+
+handle('_order'->By) -->
+    state(S0, S1),
+    { order_field_dir(By, Field, Dir),
+      format(atom(SQL), ' ORDER BY ~w ~w', [Field, Dir]),
+      put_dict([order=SQL], S0, S1) }.
+
+handle(Field-Dict) -->
+    { is_dict(Dict), dict_pairs(Dict, Table, Pairs) },
+    pushalias,
+    state(S0),
+    { new_state_with(Table, S0, [alias, next_alias, args], State),
+      writeln(new_state_is(State))
+    },
+    push_state(State),
+    { writeln(handling_nested_pairs(Pairs)) },
+    debug,
+    handle(Pairs),
+    debug,
+    pop_state(SubQuery), %% format this state as SQL
+    popalias,
+    { to_sql(SubQuery, SQL, Args),
+      writeln(subquery(SQL)) },
+    select_('NEST_MANY(~w) AS ~w', [SQL, Field]),
+    debug.
 
 
 
-format_where_op(Field, Op, Arg, Out, Args, Args) :-
-    atom(Arg),
-    % reference another field, not a parameter
-    format(atom(Out), '~w ~w ~w', [Field, Op, Arg]).
+order_field_dir(Field, Field, 'ASC') :- atom(Field).
+order_field_dir(Field-asc, Field, 'ASC').
+order_field_dir(Field-desc, Field, 'DESC').
 
-format_where_op(Field, Op, Arg, Out, ArgsIn, ArgsOut) :-
-    \+ atom(Arg),
-    arg(Arg, Ref, ArgsIn, ArgsOut),
-    format(atom(Out), '~w ~w ~w', [Field, Op, Ref]).
+where(Field, Val) -->
+    %% Not a compound value, this is a direct equality
+    { \+ compound(Val) },
+    where(Field, '=', [Val]).
 
-format_where(Field- >(V), Out, ArgsIn, ArgsOut) :-format_where_op(Field, '>', V, Out, ArgsIn, ArgsOut).
-format_where(Field- <(V), Out, ArgsIn, ArgsOut) :-format_where_op(Field, '<', V, Out, ArgsIn, ArgsOut).
-format_where(Field-Val, Out, ArgsIn, ArgsOut) :-
-    \+ compound(Val),
-    format_where_op(Field, '=', Val, Out, ArgsIn, ArgsOut).
-format_where(Field-between(Min,Max), Out, ArgsIn, ArgsOut) :-
-    arg(Min, MinRef, ArgsIn, Args1),
-    arg(Max, MaxRef, Args1, ArgsOut),
-    format(atom(Out), '(~w BETWEEN ~w AND ~w)', [Field, MinRef, MaxRef]).
-format_where(Field-like(Str), Out, ArgsIn, ArgsOut) :- format_where_op(Field, 'LIKE', Str, Out, ArgsIn, ArgsOut).
+where(Field, Val) -->
+    { compound(Val), compound_name_arguments(Val, Op, Args), writeln(doit(op(Op),args(Args))) },
+    where(Field, Op, Args),
+    { writeln(field(Field,handled(Val))) }.
 
-format_where(Field-not(Clause), Out, ArgsIn, ArgsOut) :-
-    format_where(Field-Clause, Where, ArgsIn, ArgsOut),
-    format(atom(Out), 'NOT (~w)', [Where]).
-
-
-%%%%%%%
-%% Ordering, create an ORDER BY clause from the special '_order' field
-
-order_by(Specials, '') :- \+ memberchk('_order'-_, Specials). % no order special field found, no order by
-order_by(Specials, OrderByClause) :-
-    member('_order'-Order, Specials),
-    order_by_clause(Order, OrderField, OrderDir),
-    format(atom(OrderByClause), ' ORDER BY ~w ~w', [OrderField, OrderDir]).
-
-order_by_clause(F, F, 'ASC') :- atom(F).
-order_by_clause(F-asc, F, 'ASC').
-order_by_clause(F-desc, F, 'DESC').
-
-%%%%%%%
-%% Projection, by default select everything (*). If '_only' is present, then select only
-%% the fields in that list
-
-projection(Specials, '*') :- \+ memberchk('_only'-_, Specials). % no _only special found
-projection(Specials, Projection) :-
-    member('_only'-Fields, Specials),
-    atomic_list_concat(Fields, ',', Projection).
-
-%%%%%%%5
-%% Dict to SQL conversion
-
-dict_sql(Dict, SQL, Args) :-
-    empty_args(InitialArgs),
-    dict_sql(Dict, SQL, InitialArgs, Args).
-
-dict_sql(Dict, SQL, ArgsIn, ArgsOut) :-
-    dict_pairs(Dict, Table, Fields),
-    partition_fields(Fields, ClauseFields, SpecialFields),
-    where(ClauseFields, FormattedWhereClause, ArgsIn, ArgsOut),
-    order_by(SpecialFields, OrderByClause),
-    projection(SpecialFields, Projection),
-    format(atom(SQL),
-           'SELECT ~w FROM ~w~w~w',
-           [Projection, Table, FormattedWhereClause, OrderByClause]).
-
-%%%%%%
-%% The main query interface
+where(Field, '=', [Val]) --> arg(Val, Ref), where_('~w = ~w', [Field, Ref]).
+where(Field, '<', [Val]) --> arg(Val, Ref), where_('~w < ~w', [Field, Ref]).
+where(Field, '>', [Val]) --> arg(Val, Ref), where_('~w > ~w', [Field, Ref]).
+where(Field, '<=', [Val]) --> arg(Val, Ref), where_('~w <= ~w', [Field, Ref]).
+where(Field, '>=', [Val]) --> arg(Val, Ref), where_('~w >= ~w', [Field, Ref]).
+where(Field, between, [Min,Max]) -->
+    arg(Min, MinRef), arg(Max, MaxRef), where_('(~w BETWEEN ~w AND ~w)', [Field, MinRef, MaxRef]).
+where(Field, (^), [ParentField]) -->
+    state(S0),
+    { get_dict(alias, S0, [ThisAlias, ParentAlias | _]) },
+    where_('~w.~w = ~w.~w', [ThisAlias, Field, ParentAlias, ParentField]).
 
 q(Candidate, Results) :-
-    empty_args(Args0),
-    dict_sql(Candidate, SQL, Args0, Args),
-    writeln(query(SQL,Args)),
+    dict_pairs(Candidate, Table, Pairs),
+    new_state(Table, S0),
+    phrase(handle(Pairs), [S0], [S1]),
+    to_sql(S1, SQL, Args),
+    writeln('FINAL_SQL'(SQL)),
     query(SQL, Args, Results).
-
-insert(Dict, Result) :-
-    dict_pairs(Dict, Table, Fields),
-    pairs_keys(Fields, Ks),
-    pairs_values(Fields, Vs),
-    insert_into(Table, Ks, [Vs], Result).
-
-insert(Dict) :-
-    insert(Dict, _).
