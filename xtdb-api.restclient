@@ -54,4 +54,44 @@ Content-Type: application/json
 POST :url/query
 Content-Type: application/json
 
-{"sql": "SELECT *, NEST_MANY(SELECT *, NEST_ONE(SELECT p.name,p.price FROM products p WHERE p._id=ol.product_id) as product FROM orderline ol WHERE ol.order_id=o._id) AS orderlines FROM orders o"}
+{"sql": "
+SELECT *,
+       NEST_MANY(SELECT *,
+                        NEST_ONE(SELECT p.name,p.price
+                                   FROM products p
+                                  WHERE p._id=ol.product_id) as product
+                   FROM orderline ol
+                  WHERE ol.order_id=o._id) AS orderlines
+  FROM orders o"}
+
+## Increase prices by 10%, the above query will show wrong info!
+POST :url/tx
+Content-Type: application/json
+
+{"txOps": [{"sql": "UPDATE products SET price = price * 1.10"}]}
+
+## Fix the above query to take product prices for the
+## order time!
+## The subquery is complicated, you can't just say FOR VALID_TIME AS OF o.datetime
+POST :url/query
+Content-Type: application/json
+
+{"sql": "
+SELECT *,
+       NEST_MANY(SELECT *,
+                        NEST_ONE(SELECT p.name,p.price
+                                   FROM products FOR ALL VALID_TIME p
+                                  WHERE p._id=ol.product_id
+                                    AND p._valid_to > o._valid_from
+                               ORDER BY p._valid_from DESC LIMIT 1) as product
+                   FROM orderline ol
+                  WHERE ol.order_id=o._id) AS orderlines
+  FROM orders o"}
+
+## select products at previous time before the increase
+POST :url/query
+Content-Type: application/json
+
+{"sql": "SELECT p.name,p.price FROM products FOR SYSTEM_TIME AS OF $1 p",
+ "queryOpts": {"args": [{"@type": "xt:timestamp",
+                         "@value": "2024-08-14T20:00:00.000"}]}}
