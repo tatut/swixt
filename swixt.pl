@@ -1,4 +1,5 @@
 :- module(swixt, [q/2, q/1, insert/1, insert/2, status/1]).
+:- use_module(xtdb_mapping, [json_prolog/2, to_json/2]).
 :- use_module(library(yall)).
 :- use_module(library(apply)).
 :- use_module(library(http/http_open)).
@@ -14,7 +15,9 @@ xt_post(Path, Json, Results) :-
     json_read_dict(Stream, Results, [tag('@type'),default_tag(data)]).
 
 query(Sql, Args, Results) :-
-    xt_post(query, d{sql: Sql, queryOpts: d{args: Args}}, Results).
+    to_json(Args, JsonArgs),
+    writeln(query_json_args(JsonArgs)),
+    xt_post(query, d{sql: Sql, queryOpts: d{args: JsonArgs}}, Results).
 
 to_arg_ref(N,Ref) :- format(atom(Ref), '$~d', [N]).
 
