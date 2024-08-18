@@ -116,6 +116,11 @@ popalias -->
     { _{alias: [_|Alias]} :< S0,
       put_dict([alias=Alias], S0, S1) }.
 
+alias(A) -->
+    state(S),
+    { _{alias: [A|_]} :< S }.
+
+
 %%%%%%%%
 %% Format state into SQL clause with arguments
 
@@ -128,7 +133,7 @@ to_sql(State, SQL, Args) :-
     writeln(args(Args)),
     atomic_list_concat(Proj, ', ', Projection),
     combined_where_clause(Where, WhereClause),
-    format(atom(SQL), 'SELECT ~w FROM ~w ~w ~w', [Projection, Table, Alias, WhereClause]).
+    format(atom(SQL), 'SELECT ~w, ''~w'' as "@type" FROM ~w ~w ~w', [Projection, Table, Table, Alias, WhereClause]).
 
 combined_where_clause([], '').
 combined_where_clause(Where, SQL) :-
@@ -177,8 +182,12 @@ handle(Field-Dict) -->
     { writeln(handling_nested_pairs(Pairs)) },
     debug,
     handle(Pairs),
+    pop_state(SubQuery),
+    % Restore alias and args from subquery state back to main state
+    state(State1, State2),
+    { _{next_alias: NextAlias, args: ArgsC} :< SubQuery,
+      put_dict([next_alias=NextAlias, args=ArgsC], State1, State2) },
     debug,
-    pop_state(SubQuery), %% format this state as SQL
     popalias,
     { to_sql(SubQuery, SQL, Args),
       writeln(subquery(SQL)) },
@@ -191,14 +200,20 @@ order_field_dir(Field, Field, 'ASC') :- atom(Field).
 order_field_dir(Field-asc, Field, 'ASC').
 order_field_dir(Field-desc, Field, 'DESC').
 
+aliased_field(Field, Aliased) -->
+    alias(A),
+    { format(atom(Aliased), '~w.~w', [A, Field]) }.
+
 where(Field, Val) -->
     %% Not a compound value, this is a direct equality
     { \+ compound(Val) },
-    where(Field, '=', [Val]).
+    aliased_field(Field, Aliased),
+    where(Aliased, '=', [Val]).
 
 where(Field, Val) -->
     { compound(Val), compound_name_arguments(Val, Op, Args), writeln(doit(op(Op),args(Args))) },
-    where(Field, Op, Args),
+    aliased_field(Field, Aliased),
+    where(Aliased, Op, Args),
     { writeln(field(Field,handled(Val))) }.
 
 where(Field, '=', [Val]) --> arg(Val, Ref), where_('~w = ~w', [Field, Ref]).
@@ -206,12 +221,13 @@ where(Field, '<', [Val]) --> arg(Val, Ref), where_('~w < ~w', [Field, Ref]).
 where(Field, '>', [Val]) --> arg(Val, Ref), where_('~w > ~w', [Field, Ref]).
 where(Field, '<=', [Val]) --> arg(Val, Ref), where_('~w <= ~w', [Field, Ref]).
 where(Field, '>=', [Val]) --> arg(Val, Ref), where_('~w >= ~w', [Field, Ref]).
+where(Field, like, [Val]) --> arg(Val, Ref), where_('~w LIKE ~w', [Field, Ref]).
 where(Field, between, [Min,Max]) -->
     arg(Min, MinRef), arg(Max, MaxRef), where_('(~w BETWEEN ~w AND ~w)', [Field, MinRef, MaxRef]).
 where(Field, (^), [ParentField]) -->
     state(S0),
-    { get_dict(alias, S0, [ThisAlias, ParentAlias | _]) },
-    where_('~w.~w = ~w.~w', [ThisAlias, Field, ParentAlias, ParentField]).
+    { get_dict(alias, S0, [_, ParentAlias | _]) },
+    where_('~w = ~w.~w', [Field, ParentAlias, ParentField]).
 
 q(Candidate, Results) :-
     dict_pairs(Candidate, Table, Pairs),
