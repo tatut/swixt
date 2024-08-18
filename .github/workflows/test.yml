@@ -1,0 +1,14 @@
+name: test
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - name: install swipl
+      run: |
+        sudo apt-add-repository ppa:swi-prolog/stable
+        sudo apt-get update
+        sudo apt-get install swi-prolog
+    - uses: actions/checkout@v2
+    - name: run tests
+      run: for f in *.pl; do swipl -g run_tests -t halt $f; done

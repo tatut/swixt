@@ -1,5 +1,5 @@
 %% Mapping to/from XTDB JSON LD types
-:- module(xtdb_mapping, [json_prolog/2, to_json/2]).
+:- module(xtdb_mapping, [json_prolog/2, to_json/2, string_datetimetz/2]).
 :- use_module(library(dcg/basics)).
 :- use_module(library(yall)).
 :- set_prolog_flag(double_quotes, codes).
@@ -33,10 +33,11 @@ json_prolog([JsonValue|JsonValues], [PrologValue|PrologValues]) :-
 % Any dict whose tag is not an XT type, is a table result,
 % recursively process all the fields.
 json_prolog(D0, D1) :-
-    is_dict(D0, Tag),
-    \+ xt_type(Tag),
-    dict_pairs(D0, Tag, Pairs0),
+    (ground(D0)
+    -> (is_dict(D0, Tag), \+ xt_type(Tag), dict_pairs(D0, Tag, Pairs0))
+    ; (is_dict(D1), dict_pairs(D1, Tag, Pairs1))),
     maplist([K-V0,K-V1]>>json_prolog(V0,V1), Pairs0, Pairs1),
+    dict_pairs(D0, Tag, Pairs0),
     dict_pairs(D1, Tag, Pairs1).
 
 json_prolog('xt:timestamp'{'@value': Instant}, datetime(Year,Month,Date,Hour,Minute,Second,Millisecond)) :-
@@ -63,12 +64,18 @@ int(L, Number) --> { (ground(Number) -> number_codes(Number, Cs0), pad0(L, Cs0, 
                    digits(Cs),
                    { number_codes(Number, Cs) }.
 
-% "2024-08-14T16:40:55.666"
-datetime(Year,Month,Date,Hour,Minute,Second,Millisecond) -->
-    date(Year,Month,Date), "T", time(Hour,Minute,Second,Millisecond).
+string_datetimetz(String, datetimetz(Y,M,D,H,Mi,S,Ns,Tz)) :- string_codes(String, Cs), phrase(datetimetz(Y,M,D,H,Mi,S,Ns,Tz), Cs, []).
 
+% "2024-08-14T16:40:55.666000"
+datetime(Year,Month,Date,Hour,Minute,Second,Nanos) -->
+    date(Year,Month,Date), "T", time(Hour,Minute,Second,Nanos).
+
+datetimetz(Year,Month,Date,Hour,Minute,Second,Nanos,Tz) -->
+    date(Year,Month,Date), "T", time(Hour,Minute,Second,Nanos), tz(Tz).
+
+tz(0) --> "Z". %% FIXME: support tz like "+03:00" or "[Europe/Helsinki]"?
 date(Year,Month,Date) --> int(4,Year), "-", int(2,Month), "-", int(2,Date).
-time(Hour,Minute,Second,Millisecond) --> int(2,Hour), ":", int(2,Minute), ":", int(2,Second), ".", int(3,Millisecond).
+time(Hour,Minute,Second,Nanos) --> int(2,Hour), ":", int(2,Minute), ":", int(2,Second), ".", integer(Nanos).
 
 dict_json_ld(V, V) :- \+ is_dict(V), \+ is_list(V).
 dict_json_ld([],[]).

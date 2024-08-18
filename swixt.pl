@@ -1,5 +1,5 @@
-:- module(swixt, [q/2, q/1, insert/1, insert/2, status/1]).
-:- use_module(xtdb_mapping, [json_prolog/2, to_json/2]).
+:- module(swixt, [q/2, insert/2, delete/2, status/1, tx/2]).
+:- use_module(xtdb_mapping, [json_prolog/2, to_json/2, string_datetimetz/2]).
 :- use_module(library(yall)).
 :- use_module(library(apply)).
 :- use_module(library(http/http_open)).
@@ -7,6 +7,7 @@
 :- use_module(library(http/json)).
 :- use_module(library(http/http_json)).
 :- set_prolog_flag(xt_url, 'http://localhost:6543').
+:- set_prolog_flag(xt_debug, false).
 
 xt_post(Path, Json, Results) :-
     current_prolog_flag(xt_url, BaseUrl),
@@ -16,24 +17,18 @@ xt_post(Path, Json, Results) :-
 
 query(Sql, Args, Results) :-
     to_json(Args, JsonArgs),
-    writeln(query_json_args(JsonArgs)),
     xt_post(query, d{sql: Sql, queryOpts: d{args: JsonArgs}}, Results0),
-    json_prolog(Results0, Results).
+    once(json_prolog(Results0, Results)).
 
 to_arg_ref(N,Ref) :- format(atom(Ref), '$~d', [N]).
 
-insert_into(Table, Fields, ValueRows, tx{txOps: [tx{sql: SQL, argRows: ValueRows}]}) :-
+insert_into(Table, Fields, ValueRows, tx{sql: SQL, argRows: ValueRows}) :-
     atomic_list_concat(Fields, ',', FieldList),
     length(Fields, NumArgs),
     numlist(1, NumArgs, Args),
     maplist(to_arg_ref, Args, ArgRefs),
     atomic_list_concat(ArgRefs, ',', ArgNums),
-    format(atom(SQL), 'INSERT INTO ~w (~w) VALUES (~w)', [Table, FieldList, ArgNums]),
-    writeln(insert(SQL)).
-
-insert(Dict) :-
-    insert(Dict, TxOp),
-    xt_post(tx, tx{txOps: [TxOp]}, _Results).
+    format(string(SQL), 'INSERT INTO ~w (~w) VALUES (~w)', [Table, FieldList, ArgNums]).
 
 insert(Dict, TxOp) :-
     dict_pairs(Dict, Table, Fields),
@@ -47,6 +42,12 @@ status(Status) :-
     http_open(Url, Stream, []),
     json_read_dict(Stream, Status, [tag('@type'),default_tag(xt)]).
 
+tx(TxOpCalls, tx{systemTime: SystemTime, id: TxId}) :-
+    maplist([TxOpCall,TxOp]>>(call(TxOpCall, TxOp)), TxOpCalls, TxOps),
+    once(json_prolog(TxOpsJson, TxOps)),
+    xt_post(tx, tx{txOps: TxOpsJson}, Result),
+    _{'systemTime': SystemTimeStr, 'txId': TxId} :< Result,
+    string_datetimetz(SystemTimeStr, SystemTime).
 
 %%% State
 % The state of building a SQL query consists of a dict that contains the
@@ -76,9 +77,9 @@ state(S0, S1), [S1] --> [S0].
 push_state(NewState), [NewState, S] --> [S].
 pop_state(Popped), [S] --> [Popped, S].
 
-debug -->
-    state(S),
-    { writeln(current_state(S)) }.
+debug(Term) :- current_prolog_flag(xt_debug, D), debug(D, Term).
+debug(false, _).
+debug(true, T) :- writeln(T).
 
 %% Add new argument, Ref unifies with the number
 arg(Val, Ref) -->
@@ -131,15 +132,22 @@ alias(A) -->
 %% Format state into SQL clause with arguments
 
 to_sql(State, SQL, Args) :-
-    writeln(state(State)),
     _{alias: [Alias|_], table: Table, projection: ProjRev, where: Where,
-      args: _-ArgsRev} :< State,
+      args: _-ArgsRev, order: OrderBy} :< State,
     reverse(ArgsRev, Args),
     reverse(ProjRev, Proj),
-    writeln(args(Args)),
     atomic_list_concat(Proj, ', ', Projection),
     combined_where_clause(Where, WhereClause),
-    format(atom(SQL), 'SELECT ~w, ''~w'' as "@type" FROM ~w ~w ~w', [Projection, Table, Table, Alias, WhereClause]).
+    format(string(SQL), 'SELECT ~w, ''~w'' as "@type" FROM ~w ~w ~w ~w',
+           [Projection, Table, Table, Alias, WhereClause, OrderBy]).
+
+to_sql_delete(State, SQL, Args) :-
+    _{alias: [Alias|_], table: Table, where: Where,
+      args: _-ArgsRev} :< State,
+    reverse(ArgsRev, Args),
+    combined_where_clause(Where, WhereClause),
+    format(string(SQL), 'DELETE FROM ~w ~w ~w', [Table, Alias, WhereClause]).
+
 
 combined_where_clause([], '').
 combined_where_clause(Where, SQL) :-
@@ -168,7 +176,6 @@ handle(Field-Val) -->
     where(Field, Val).
 
 handle('_only'-Lst) -->
-    { writeln(handling_only(Lst)) },
     remove_star,
     state(S0, S1),
     { put_dict([projection=Lst], S0, S1) }.
@@ -190,25 +197,18 @@ handle(Field-Dict) -->
     { is_dict(Dict), dict_pairs(Dict, Table, Pairs) },
     pushalias,
     state(S0),
-    { new_state_with(Table, S0, [alias, next_alias, args], State),
-      writeln(new_state_is(State))
-    },
+    { new_state_with(Table, S0, [alias, next_alias, args], State) },
     push_state(State),
-    { writeln(handling_nested_pairs(Pairs)) },
-    debug,
     handle(Pairs),
     pop_state(SubQuery),
     % Restore alias and args from subquery state back to main state
     state(State1, State2),
     { _{next_alias: NextAlias, args: ArgsC} :< SubQuery,
       put_dict([next_alias=NextAlias, args=ArgsC], State1, State2) },
-    debug,
     popalias,
-    { to_sql(SubQuery, SQL, Args),
-      _{cardinality: Cardinality} :< SubQuery,
-      writeln(subquery(SQL)) },
-    select_('NEST_~w(~w) AS ~w', [Cardinality, SQL, Field]),
-    debug.
+    { to_sql(SubQuery, SQL, _Args),
+      _{cardinality: Cardinality} :< SubQuery },
+    select_('NEST_~w(~w) AS ~w', [Cardinality, SQL, Field]).
 
 
 
@@ -227,10 +227,9 @@ where(Field, Val) -->
     where(Aliased, '=', [Val]).
 
 where(Field, Val) -->
-    { compound(Val), compound_name_arguments(Val, Op, Args), writeln(doit(op(Op),args(Args))) },
+    { compound(Val), compound_name_arguments(Val, Op, Args) },
     aliased_field(Field, Aliased),
-    where(Aliased, Op, Args),
-    { writeln(field(Field,handled(Val))) }.
+    where(Aliased, Op, Args).
 
 where(Field, '=', [Val]) --> arg(Val, Ref), where_('~w = ~w', [Field, Ref]).
 where(Field, '<', [Val]) --> arg(Val, Ref), where_('~w < ~w', [Field, Ref]).
@@ -250,5 +249,89 @@ q(Candidate, Results) :-
     new_state(Table, S0),
     phrase(handle(Pairs), [S0], [S1]),
     to_sql(S1, SQL, Args),
-    writeln('FINAL_SQL'(SQL)),
+    debug('FINAL_SQL'(SQL)),
     query(SQL, Args, Results).
+
+delete(Candidate, tx{sql: SQL, argRows: [Args]}) :-
+    dict_pairs(Candidate, Table, Pairs),
+    new_state(Table, S0),
+    phrase(handle(Pairs), [S0], [S1]),
+    to_sql_delete(S1, SQL, Args),
+    debug('FINAL_DELETE_SQL'(SQL)).
+
+update(Candidate, Fields, TxOp) :-
+    throw(not_implemented_yet("Use raw to do update for now")).
+    %% Candidate determines the where clause
+    %% and fields is expression to do an update, fixme: what should be supported?
+    %%
+    %% at least setting to direct values, like: {value: 42}
+    %% what about arithmetic expressions? {value: value * 1.10}
+
+
+
+%% Raw SQL clause to run.
+raw(SQL, tx{sql: SQL, argRows: [[]]}).
+raw(SQL, ArgRows, tx{sql: SQL, argRows: ArgRows}).
+
+%%%%%%%%%%
+% Test suite
+
+:- begin_tests(swixt, [setup(init_test_data)]).
+
+init_test_data :-
+    tx([ insert(person{'_id': 1, name: "Max Syöttöpaine"}),
+         insert(person{'_id': 2, name: "Barbara Jenkins"}),
+
+         insert(todo{'_id': 1, item: "make some test data", done: true, assignee: 1}),
+         insert(todo{'_id': 2, item: "implement more features", done: false, assignee: 1}),
+         insert(todo{'_id': 3, item: "update readme", done: true}),
+         insert(todo{'_id': 4, item: "implement operators", done: true}),
+         insert(todo{'_id': 5, item: "write tests", done: true, assignee: 1}),
+         insert(todo{'_id': 6, item: "gain mass popularity", done: false, assignee: 2})
+       ], _).
+
+test(basic_query_with_id) :-
+    q(todo{'_id': 1}, [todo{'_id': 1, item: "make some test data", done: true, assignee: 1}]).
+
+test(select_only_some_fields) :-
+    q(todo{'_only': ['_id',done],'_order':'_id'-asc},
+      [todo{'_id':1,done:true},
+       todo{'_id':2,done:false},
+       todo{'_id':3,done:true},
+       todo{'_id':4,done:true},
+       todo{'_id':5,done:true},
+       todo{'_id':6,done:false}]).
+
+test(ordering) :-
+    tx([ raw("INSERT INTO num (_id, n) VALUES ($1, $2)", [[1, 666], [2, -1234], [3, 420], [4, 13]]) ], _),
+    q(num{'_only': [n], '_order': n}, [ num{n: -1234}, num{n: 13}, num{n: 420}, num{n: 666} ]),
+    q(num{'_only': [n], '_order': n-asc}, [ num{n: -1234}, num{n: 13}, num{n: 420}, num{n: 666} ]),
+    q(num{'_only': [n], '_order': n-desc}, [ num{n: 666}, num{n: 420},  num{n: 13}, num{n: -1234} ]),
+    q(num{'_only': [n], '_order': '_id'}, [ num{n: 666}, num{n: -1234}, num{n: 420}, num{n: 13} ]).
+
+ex(todo{'_id': <(2)}, [todo{'_id': 1, item: "make some test data", done: true, assignee: 1}]).
+ex(todo{'_only': ['_id'], item: like("%test%"), '_order': '_id'}, [todo{'_id': 1}, todo{'_id': 5}]).
+ex(todo{'_id': between(2,4), '_only': ['_id'], '_order': '_id'}, [todo{'_id': 2}, todo{'_id': 3}, todo{'_id': 4}]).
+
+% Find person and nest all their todos
+ex(person{'_id': 1, todos: todo{'assignee': ^('_id'), '_only':[item], '_order': '_id'}},
+   [person{'_id': 1, name: "Max Syöttöpaine",
+           todos: [ todo{item: "make some test data"},
+                    todo{item: "implement more features"},
+                    todo{item: "write tests"} ]}]).
+
+ex(person{'_id': 1, todos: todo{'assignee': ^('_id'), '_only':[item], done: false}},
+   [person{'_id': 1, name: "Max Syöttöpaine",
+           todos: [ todo{item: "implement more features"} ]}]).
+
+% Find incomplete todos and nest the one assignee
+ex(todo{done: false,
+        assigned: person{'_id': ^(assignee), '_cardinality': one},
+        '_order': '_id'},
+   [ todo{'_id':2, assigned:person{'_id':1, name:"Max Syöttöpaine"}, assignee:1, done:false, item:"implement more features"},
+     todo{'_id':6, assigned:person{'_id':2, name:"Barbara Jenkins"}, assignee:2, done:false, item:"gain mass popularity"}]).
+
+
+test(queries, [forall(ex(Candidate,Results))]) :- q(Candidate,Results).
+
+:- end_tests(swixt).
