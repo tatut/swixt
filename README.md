@@ -52,3 +52,22 @@ R = [orders{'_id':1,
             orderlines:[orderline{'_id':2, order_id:1, product: products{name:"Ball", price: 7.99}, product_id:4, quantity:10},
                         orderline{'_id':1, order_id:1, product: products{name:"Fine leather jacket", 29.95}, product_id:1, quantity:1}]}]
 ```
+
+### Transactions
+
+The `tx` goal takes a list of transaction operations and a result.
+
+Supported transaction operations currently are:
+- `insert` inserts a dict as a table row
+- `delete` takes a candidate object (like in query) and deletes any matching rows
+- `raw` takes a SQL string and list of argument lists (or just a SQL string).
+
+A declarative `update` is also planned, but `raw` can be used now.
+
+Example:
+```prolog
+tx([ insert(todo{'_id': 100, item: "do something", done: false}),
+     delete(todo{done: true, completed: <(date(2020,1,1))}),
+     raw("UPDATE todo SET done=true WHERE _id=$1", [[1], [42]]) ], R).
+R = tx{id:..., systemTime:datetimetz(2024, ...)}.
+```
