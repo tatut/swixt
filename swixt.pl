@@ -56,7 +56,9 @@ new_state(Table, q{alias: [a],
                    table: Table,
                    projection: ['*'],
                    where: [],
-                   order: ''}).
+                   order: '',
+                   % Only used for subqueries (NEST_MANY or NEST_ONE)
+                   cardinality: 'MANY'}).
 
 new_state_with(Table, OldState, KeepFields, State) :-
     new_state(Table, S0),
@@ -148,6 +150,7 @@ combined_where_clause(Where, SQL) :-
 
 special_field('_only').
 special_field('_order').
+special_field('_cardinality').
 
 handle([Fv|Fvs]) -->
     handle(Fv),
@@ -172,6 +175,13 @@ handle('_order'-By) -->
       format(atom(SQL), ' ORDER BY ~w ~w', [Field, Dir]),
       put_dict([order=SQL], S0, S1) }.
 
+handle('_cardinality'-one) -->
+    state(S0, S1),
+    { put_dict([cardinality='ONE'], S0, S1) }.
+handle('_cardinality'-many) -->
+    state(S0, S1),
+    { put_dict([cardinality='MANY'], S0, S1) }.
+
 handle(Field-Dict) -->
     { is_dict(Dict), dict_pairs(Dict, Table, Pairs) },
     pushalias,
@@ -191,8 +201,9 @@ handle(Field-Dict) -->
     debug,
     popalias,
     { to_sql(SubQuery, SQL, Args),
+      _{cardinality: Cardinality} :< SubQuery,
       writeln(subquery(SQL)) },
-    select_('NEST_MANY(~w) AS ~w', [SQL, Field]),
+    select_('NEST_~w(~w) AS ~w', [Cardinality, SQL, Field]),
     debug.
 
 
