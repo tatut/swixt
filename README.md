@@ -28,7 +28,7 @@ Supported operations are: `=`, `<`, `<=`, `>`, `>=`, `like`, and `between`.
 
 XTDB has a handy way to query nested data which. If a value is another dict, it is interpreted
 as a nested subquery to return. By default the items are returned in a nested list (using NEST_MANY),
-but you can specify ``_cardinality': one` to return only 1 item (using NEST_ONE), in which case the
+but you can specify `'_cardinality': one` to return only 1 item (using NEST_ONE), in which case the
 subquery must only return one row.
 
 You can refer to the parent via `^(parent_field)` to specify join condition.
