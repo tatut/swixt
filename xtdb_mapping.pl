@@ -1,7 +1,21 @@
 %% Mapping to/from XTDB JSON LD types
 :- module(xtdb_mapping, [json_prolog/2, to_json/2]).
 :- use_module(library(dcg/basics)).
+:- use_module(library(yall)).
 :- set_prolog_flag(double_quotes, codes).
+
+%% XT type mapping, see: https://github.com/xtdb/xtdb/blob/main/api/src/main/kotlin/xtdb/JsonSerde.kt#L60
+xt_type('xt:instant').
+xt_type('xt:timestamptz').
+xt_type('xt:timestamp').
+xt_type('xt:date').
+xt_type('xt:duration').
+xt_type('xt:timeZone').
+xt_type('xt:period').
+xt_type('xt:keyword').
+xt_type('xt:symbol').
+xt_type('xt:uuid').
+xt_type('xt:set').
 
 % Types passed through unchanged: numbers, strings, booleans, null
 json_prolog(V, V) :- string(V).
@@ -14,6 +28,16 @@ json_prolog([], []).
 json_prolog([JsonValue|JsonValues], [PrologValue|PrologValues]) :-
     json_prolog(JsonValue, PrologValue),
     json_prolog(JsonValues, PrologValues).
+
+
+% Any dict whose tag is not an XT type, is a table result,
+% recursively process all the fields.
+json_prolog(D0, D1) :-
+    is_dict(D0, Tag),
+    \+ xt_type(Tag),
+    dict_pairs(D0, Tag, Pairs0),
+    maplist([K-V0,K-V1]>>json_prolog(V0,V1), Pairs0, Pairs1),
+    dict_pairs(D1, Tag, Pairs1).
 
 json_prolog('xt:timestamp'{'@value': Instant}, datetime(Year,Month,Date,Hour,Minute,Second,Millisecond)) :-
     (ground(Instant) -> string_codes(Instant, Codes); true),

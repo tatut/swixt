@@ -17,7 +17,8 @@ xt_post(Path, Json, Results) :-
 query(Sql, Args, Results) :-
     to_json(Args, JsonArgs),
     writeln(query_json_args(JsonArgs)),
-    xt_post(query, d{sql: Sql, queryOpts: d{args: JsonArgs}}, Results).
+    xt_post(query, d{sql: Sql, queryOpts: d{args: JsonArgs}}, Results0),
+    json_prolog(Results0, Results).
 
 to_arg_ref(N,Ref) :- format(atom(Ref), '$~d', [N]).
 
