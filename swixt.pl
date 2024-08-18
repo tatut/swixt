@@ -99,7 +99,7 @@ select_(Fmt, Args) -->
 
 remove_star -->
     state(S0, S1),
-    { get_dict(project, S0, Proj),
+    { get_dict(projection, S0, Proj),
       exclude(=('*'), Proj, WithoutStar),
       put_dict([projection=WithoutStar], S0, S1) }.
 
@@ -160,12 +160,13 @@ handle(Field-Val) -->
     { \+ special_field(Field), \+ is_dict(Val) },
     where(Field, Val).
 
-handle('_only'->Lst) -->
+handle('_only'-Lst) -->
+    { writeln(handling_only(Lst)) },
     remove_star,
     state(S0, S1),
     { put_dict([projection=Lst], S0, S1) }.
 
-handle('_order'->By) -->
+handle('_order'-By) -->
     state(S0, S1),
     { order_field_dir(By, Field, Dir),
       format(atom(SQL), ' ORDER BY ~w ~w', [Field, Dir]),
