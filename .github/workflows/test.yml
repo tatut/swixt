@@ -10,5 +10,11 @@ jobs:
         sudo apt-get update
         sudo apt-get install swi-prolog
     - uses: actions/checkout@v2
+    - name: start xtdb
+      run: docker run -d --pull=always -tip 6543:3000 ghcr.io/xtdb/xtdb-standalone-ea
+    - name: wait for port
+      uses: iFaxity/wait-on-action
+      with:
+        resource: http://localhost:6543/status
     - name: run tests
       run: for f in *.pl; do swipl -g run_tests -t halt $f; done
