@@ -13,8 +13,6 @@ jobs:
     - name: start xtdb
       run: docker run -d --pull=always -tip 6543:3000 ghcr.io/xtdb/xtdb-standalone-ea
     - name: wait for port
-      uses: iFaxity/wait-on-action
-      with:
-        resource: http://localhost:6543/status
+      run:  curl --retry 20 --retry-all-errors --retry-delay 5 http://localhost:6543/status
     - name: run tests
       run: for f in *.pl; do swipl -g run_tests -t halt $f; done
