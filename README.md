@@ -1,6 +1,8 @@
 # Swixt: a SWI-Prolog interface to XTDB v2
 
-[XTDB](https://xtdb.com) is a temporal schema free database.
+![test workflow](https://github.com/tatut/swixt/actions/workflows/test.yml/badge.svg)
+
+[XTDB](https://xtdb.com) is a bitemporal schema free database that supports SQL and nested data.
 
 This library provides a SWI-Prolog interface to store and query Prolog
 dicts as documents in XTDB.
