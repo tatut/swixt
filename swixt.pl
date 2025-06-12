@@ -1,13 +1,58 @@
-:- module(swixt, [q/2, insert/2, delete/2, status/1, tx/2]).
+:- module(swixt, [q/1, q/2, insert/2, delete/2, status/1, tx/2]).
 :- use_module(xtdb_mapping, [json_prolog/2, to_json/2, string_datetimetz/2]).
+:- use_module(library(odbc)).
 :- use_module(library(yall)).
 :- use_module(library(apply)).
-:- use_module(library(http/http_open)).
-:- use_module(library(http/http_client)).
-:- use_module(library(http/json)).
-:- use_module(library(http/http_json)).
-:- set_prolog_flag(xt_url, 'http://localhost:6543').
+:- set_prolog_flag(xt_connection, xtdb).
 :- set_prolog_flag(xt_debug, false).
+:- set_prolog_flag(xt_odbc_driver, 'psqlodbcw.so').
+:- use_foreign_library(foreign(swixt)).
+
+% Convert from Prolog term into a Oid-String representation for postgres API
+xt_type(true, 16-true).
+xt_type(false, 16-false).
+xt_type(time(H,M,S,Micros), 1083-Str) :- format(string(Str), '~|~`0t~d~2+:~|~`0t~d~2+:~|~`0t~d~2+.~d', [H,M,S,Micros]).
+xt_type(date(Y,M,D), 1082-Str) :- format(string(Str), '~|~`0t~d~4+-~|~`0t~d~2+-~|~`0t~d~2+', [Y,M,D]).
+xt_type(X, 701-X) :- float(X).
+xt_type(X, 20-X) :- integer(X).
+xt_type(X, 25-X) :- string(X).
+xt_type(X, 25-X) :- atom(X).
+
+
+doit(X,A, R) :-
+    swixt_pg_connect("host=localhost port=5433 dbname=xtdb"),
+    maplist(xt_type, A, TypedArgs),
+    swixt_pg_query(X,TypedArgs,R).
+
+connect(ConnectionName, Host, Port) :-
+    current_prolog_flag(xt_odbc_driver, D),
+    atomic_list_concat(
+        ['Driver={', D, '};Server=', Host, ';Port=', Port, ';Database=xtdb;Uid=;Pwd='],
+        DriverString),
+    odbc_connect(ConnectionName, _,
+                 [ driver_string(DriverString), alias(ConnectionName) ]).
+
+connect(Host,Port) :-
+    current_prolog_flag(xt_connection, Con),
+    connect(Con,Host,Port).
+
+connect(Host) :- connect(Host,5432).
+connect :- connect('localhost').
+
+odbc_q(Con, SQL, Results) :-
+    odbc_query(Con, SQL, Results, [source(true)]).
+
+odbc_q(SQL, Results) :-
+    current_prolog_flag(xt_connection, Con),
+    odbc_q(Con, SQL, Results).
+
+q(Sql, Parameters, Results) :-
+    maplist(nth0(0), Parameters, ArgTypes),
+    maplist(nth0(1), Parameters, ArgVals),
+    odbc_prepare(mydb, Sql, ArgTypes, Qid),
+    odbc_execute(Qid, ArgVals, Results),
+    odbc_free_statement(Qid).
+
 
 xt_post(Path, Json, Results) :-
     current_prolog_flag(xt_url, BaseUrl),
@@ -63,7 +108,13 @@ new_state(Table, q{alias: [a],
                    where: [],
                    order: '',
                    % Only used for subqueries (NEST_MANY or NEST_ONE)
-                   cardinality: 'MANY'}).
+                   cardinality: 'MANY',
+                   bind: unsupported % list of bindings, only supported in q/1
+                  }).
+
+new_state_with(Table, Fields, State) :-
+    new_state(Table, S0),
+    put_dict(Fields, S0, State).
 
 new_state_with(Table, OldState, KeepFields, State) :-
     new_state(Table, S0),
@@ -132,6 +183,7 @@ alias(A) -->
 %% Format state into SQL clause with arguments
 
 to_sql(State, SQL, Args) :-
+    debug(state(State)),
     _{alias: [Alias|_], table: Table, projection: ProjRev, where: Where,
       args: _-ArgsRev, order: OrderBy} :< State,
     reverse(ArgsRev, Args),
@@ -170,9 +222,17 @@ handle([Fv|Fvs]) -->
 
 handle([]) --> [].
 
+handle(Field-Var) -->
+    { ground(Field), var(Var) },
+    aliased_field(Field, Field1),
+    state(S0, S1),
+    { _{bind: Bindings, projection: Projection} :< S0,
+      (Bindings = unsupported -> throw(bindings_unsupported("use q/1")); true),
+      put_dict([bind=[Field-Var|Bindings], projection=[Field1|Projection]], S0, S1) }.
+
 handle(Field-Val) -->
     % Don't handle special fields or nested dictionaries
-    { \+ special_field(Field), \+ is_dict(Val) },
+    { \+ special_field(Field), \+ is_dict(Val), \+ var(Val) },
     where(Field, Val).
 
 handle('_only'-Lst) -->
@@ -210,7 +270,11 @@ handle(Field-Dict) -->
       _{cardinality: Cardinality} :< SubQuery },
     select_('NEST_~w(~w) AS ~w', [Cardinality, SQL, Field]).
 
-
+% Combine where clause and a bind variable
+handle(Field-(Where/Var)) -->
+    { ground(Where), var(Var) },
+    handle(Field-Var),
+    handle(Field-Where).
 
 order_field_dir(Field, Field, 'ASC') :- atom(Field).
 order_field_dir(Field-asc, Field, 'ASC').
@@ -252,6 +316,27 @@ q(Candidate, Results) :-
     debug('FINAL_SQL'(SQL)),
     query(SQL, Args, Results).
 
+% Logical version of query, each row will bind any variables
+% in the candidate fields.
+q(Candidate) :-
+    dict_pairs(Candidate, Table, Pairs),
+    new_state_with(Table, [projection=[], bind=[]], S0),
+    phrase(handle(Pairs), [S0], [S1]),
+    to_sql(S1, SQL, Args),
+    debug('FINAL_SQL'(SQL)),
+    query(SQL, Args, Results),
+    member(Row, Results),
+    _{bind: Bindings} :< S1,
+    maplist({Row}/[Field-Var]>>get_dict(Field, Row, Var), Bindings).
+
+%% PENDING: how about JOINs (apart from NEST_MANY/_ONE use)
+% we could use a logic variable to determine the join condition
+% example:
+% products{'_id': PId, price: P} ^ orderline{product_id: PId, quantity: Q}
+%
+% this get orderline quantity and product price joined by product id
+% what about time?
+
 delete(Candidate, tx{sql: SQL, argRows: [Args]}) :-
     dict_pairs(Candidate, Table, Pairs),
     new_state(Table, S0),
@@ -267,6 +352,11 @@ update(Candidate, Fields, TxOp) :-
     %% at least setting to direct values, like: {value: 42}
     %% what about arithmetic expressions? {value: value * 1.10}
 
+%%
+% aggregates sub query
+% q(products{name: Name,
+%            price: Price,
+%            bought: sum(Bought, quantity, orderline{product_id: ^('_id')})}.
 
 
 %% Raw SQL clause to run.
