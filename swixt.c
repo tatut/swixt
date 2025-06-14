@@ -1,51 +1,116 @@
 #include <stdatomic.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "libpq-fe.h" /* libpq */
+#include "libpq-fe.h"
 #include "SWI-Prolog.h"
-#include "SWI-Stream.h"
+//#include "SWI-Stream.h"
 #include <stdbool.h>
+#include "json.h"
 
-PGconn *conn; // the global connection
-
-void type_name(PGconn *c, Oid oid, char *to) {
-  PGresult *res;
-  char query[64];
-  snprintf(query, 64, "SELECT typname FROM pg_type WHERE oid = %d", oid);
-  res = PQexec(c, query);
-  if(PQresultStatus(res) != PGRES_TUPLES_OK) {
-      strcpy(to, "ERROR\0");
-  } else if(PQntuples(res) < 1) {
-    strcpy(to, "N/A\n");
-  } else {
-    strcpy(to, PQgetvalue(res, 0, 0));
-  }
-  PQclear(res);
-}
-
-static foreign_t pl_connect(term_t connstr) {
+static foreign_t pl_connect(term_t connstr, term_t CONN) {
   char *s;
   if(PL_get_chars(connstr, &s, CVT_ALL|REP_UTF8)) {
-    conn = PQconnectdb(s);
+    PGconn *conn = PQconnectdb(s);
     if(PQstatus(conn) != CONNECTION_OK) {
       fprintf(stderr, "Connection failed with: %s\n", s);
       return false;
     }
-    return true;
+    functor_t c = PL_new_functor(PL_new_atom("xtconn"), 1);
+    term_t c1 = PL_new_term_ref();
+    term_t xtconn = PL_new_term_ref();
+    if (!PL_put_int64(c1, (uint64_t)conn)) goto fail;
+    if (!PL_cons_functor(xtconn, c, c1))
+      goto fail;
+    return PL_unify(xtconn, CONN);
+  fail:
+    PQfinish(conn);
+    return false;
   } else {
     return false;
+  }
+
+}
+
+PGconn *get_connection(term_t conn_handle) {
+  term_t pointer = PL_new_term_ref();
+  if (!PL_get_arg(1, conn_handle, pointer)) {
+    term_t except = PL_unify_term(except, PL_FUNCTOR_CHARS, "invalid_xtconn");
+    PL_raise_exception(except);
+    return NULL;
+  }
+  PGconn *conn;
+  if (!PL_get_uint64_ex(pointer, (uint64_t *)&conn))
+    return NULL;
+  return conn;
+}
+
+static foreign_t pl_close(term_t conn_handle) {
+  PGconn *conn = get_connection(conn_handle);
+  if (conn == NULL) {
+    return false;
+  } else {
+    PQfinish(conn);
+    return true;
   }
 }
 
 #define MAX_ARGS 32
 
-static foreign_t pl_query(term_t query, term_t args, term_t RESULT) {
+static bool from_db_value(term_t to, PGresult *res, size_t row, size_t field) {
+  if (PQgetisnull(res, row, field)) {
+    return PL_put_nil(to);
+  }
+  switch (PQftype(res, field)) {
+    /*
+     *    typname   |  oid
+     -------------+-------
+     _int8       |  1016
+     float8      |   701
+     bytea       |    17
+     date        |  1082
+     float4      |   700
+     numeric     |  1700
+     int2        |    21
+     jsonb       |  3802
+     time        |  1083
+     timestamptz |  1184
+     _int4       |  1007
+     int4        |    23
+     int8        |    20
+     transit     | 16384
+     tstz-range  |  3910
+     keyword     | 11111
+     regproc     |    24
+     _text       |  1009
+     interval    |  1186
+     varchar     |  1043
+     uuid        |  2950
+     json        |   114
+     timestamp   |  1114
+     boolean     |    16
+     text        |    25
+     regclass    |  2205
+    */
+
+  case 114:
+    return json_parse_toplevel(PQgetvalue(res, row, field), to);
+
+  default:
+    return PL_put_string_chars(to, PQgetvalue(res, row, field));
+  }
+}
+
+static foreign_t pl_query(term_t conn_handle, term_t query, term_t args, term_t RESULT) {
   PGresult *res;
+  PGconn *conn;
   char *s;
   const char *query_args[MAX_ARGS];
   Oid query_arg_types[MAX_ARGS];
-  int argc=0;
+  int argc = 0;
+  conn = get_connection(conn_handle);
+  if(conn == NULL) return false;
   if(!PL_is_list(args)) {
     fprintf(stderr, "Query arguments is not a list\n");
     return false;
@@ -73,9 +138,10 @@ static foreign_t pl_query(term_t query, term_t args, term_t RESULT) {
     if(!PL_get_tail(arg, arg)) break;
   }
   if(PL_get_chars(query, &s, CVT_ALL|REP_UTF8)) {
-    printf("running query: %s (argc: %d)\n", s, argc);
+    printf("thread(%d) running query: %s (argc: %d)\n", PL_thread_self(), s,
+           argc);
     res = PQexecParams(conn, s, argc, query_arg_types, query_args,
-                                 NULL, NULL, 1);
+                       NULL, NULL, 1);
     if(PQresultStatus(res) == PGRES_TUPLES_OK) {
       PL_fid_t fid = PL_open_foreign_frame();
 
@@ -89,13 +155,15 @@ static foreign_t pl_query(term_t query, term_t args, term_t RESULT) {
       atom_t table_tag = PL_new_atom("fixme"); // use __type field
       atom_t field_tags[nfields];
       for(size_t f=0;f<nfields;f++) {
-        field_tags[f] = PL_new_atom(PQfname(res,f));
+        field_tags[f] = PL_new_atom(PQfname(res, f));
+        printf("field %ld type is %d\n", f, PQftype(res, f));
       }
       while(row >= 0) {
         term_t dict = PL_new_term_ref();
         term_t vals = PL_new_term_refs(nfields);
         for (size_t f = 0; f < nfields; f++) {
-          PL_put_string_chars((vals+f), PQgetvalue(res, row, f));
+          if(!from_db_value((vals+f), res, row, f)) goto free_args_fail;
+
         }
         PL_put_dict(dict, table_tag, nfields, field_tags, vals);
         PL_cons_list(result, dict, result);
@@ -116,9 +184,19 @@ static foreign_t pl_query(term_t query, term_t args, term_t RESULT) {
   return false;
 }
 
+foreign_t testparse(term_t in, term_t parsed) {
+  char *s;
+  if (PL_get_chars(in, &s, CVT_ALL | REP_UTF8)) {
+    return json_parse_toplevel(s, parsed);
+  }
+  return false;
+}
+
 install_t install_swixt(void) {
-  PL_register_foreign("swixt_pg_connect", 1, pl_connect, 0);
-  PL_register_foreign("swixt_pg_query", 3, pl_query, 0);
+  PL_register_foreign("swixt_pg_connect", 2, pl_connect, 0);
+  PL_register_foreign("swixt_pg_close", 1, pl_close, 0);
+  PL_register_foreign("swixt_pg_query", 4, pl_query, 0);
+  PL_register_foreign("swixt_json", 2, testparse, 0);
 }
 /*
 int main(int argc, char**argv) {

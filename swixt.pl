@@ -3,9 +3,8 @@
 :- use_module(library(odbc)).
 :- use_module(library(yall)).
 :- use_module(library(apply)).
-:- set_prolog_flag(xt_connection, xtdb).
+:- set_prolog_flag(xt_connection_info, "host=localhost port=5433 dbname=xtdb").
 :- set_prolog_flag(xt_debug, false).
-:- set_prolog_flag(xt_odbc_driver, 'psqlodbcw.so').
 :- use_foreign_library(foreign(swixt)).
 
 % Convert from Prolog term into a Oid-String representation for postgres API
@@ -17,12 +16,15 @@ xt_type(X, 701-X) :- float(X).
 xt_type(X, 20-X) :- integer(X).
 xt_type(X, 25-X) :- string(X).
 xt_type(X, 25-X) :- atom(X).
-
+% ^ FIXME: move type case to C side?
+% we create the dicts there
 
 doit(X,A, R) :-
-    swixt_pg_connect("host=localhost port=5433 dbname=xtdb"),
-    maplist(xt_type, A, TypedArgs),
-    swixt_pg_query(X,TypedArgs,R).
+    current_prolog_flag(xt_connection_info, ConnInfo),
+    setup_call_cleanup(swixt_pg_connect(ConnInfo, Conn),
+                       (maplist(xt_type, A, TypedArgs),
+                        swixt_pg_query(Conn,X,TypedArgs,R)),
+                       swixt_pg_close(Conn)).
 
 connect(ConnectionName, Host, Port) :-
     current_prolog_flag(xt_odbc_driver, D),
