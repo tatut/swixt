@@ -103,7 +103,7 @@ static bool read_str(char *at, size_t len, char *to, char **after) {
   *after = end+1;
   if(end-at > len) return false;
   strncpy(to, at+1, end-at-1);
-  to[end-at] = 0;
+  to[end-at-1] = 0;
   return true;
 }
 static bool parse_string(char *at, term_t to, char **after) {
@@ -128,8 +128,7 @@ static bool read_int(char *at, long *num, char **after) {
 }
 
 
-static bool parse_timestamp(char *at, term_t to,  char **after) {
-  expect(*at == '"'); at++;
+static bool parse_timestamp(term_t to, char *at) {
   long year, month, day, hour, minute, seconds=0, micros=0;
   // 2025-06-14T17:45:12.666420 (seconds and micros optional)
   expect(read_int(at, &year, &at));
@@ -141,7 +140,7 @@ static bool parse_timestamp(char *at, term_t to,  char **after) {
   expect(read_int(at, &hour, &at));
   expect(*at == ':'); at++;
   expect(read_int(at, &minute, &at));
-  if(*at == '"') goto end;
+  if(*at == 0) goto end;
   expect(*at == ':'); at++;
   expect(read_int(at, &seconds, &at));
   if(*at == '"') goto end;
@@ -149,7 +148,7 @@ static bool parse_timestamp(char *at, term_t to,  char **after) {
   expect(read_int(at, &micros, &at));
  end:
   // construct the term and read the ending '"'
-  expect(*at == '"'); *after = at + 1;
+  expect(*at == 0);
   return PL_unify_term(to,
                        PL_FUNCTOR_CHARS, "timestamp", 7,
                        PL_LONG, year,
@@ -161,69 +160,83 @@ static bool parse_timestamp(char *at, term_t to,  char **after) {
                        PL_LONG, micros);
 }
 
+static bool parse_special(term_t to, char *type, char *value) {
+  if(strcmp(type, "xt:timestamp")==0) {
+    return parse_timestamp(to, value);
+  } else if(strcmp(type, "xt:date")==0) {
+    // FIXME;
+    return false;
+  } else {
+    fprintf(stderr, "Unrecognized special @type: %s\n", type);
+    return false;
+  }
+}
+
+#define MAX_KEY_LEN 128
+#define MAX_OBJECT 256
+#define MAX_VALUE_LEN 256
 
 static bool parse_object(char *at, term_t to, char **after) {
   expect(*at == '{'); at++;
-  char *type;
+  char type[MAX_KEY_LEN];
+  char value[MAX_VALUE_LEN];
+  bool has_type = false, has_value = false;
   atom_t tag = 0;
-  if(looking_at_then(at, "\"@type\":", &type)) {
-    // begins with a json-ld type annotation
-    // check if we have a predefined known type
-    char *value;
-    if(looking_at_then(type, "\"xt:timestamp\",\"@value\":", &value)) {
-      if(parse_timestamp(value, to, &at)) {
-        // if at end of object, we succeeded
-        if(looking_at(at, "}")) {
-          *after = at + 1;
-          return true;
-        } else {
-          return false;
-        }
-      } else {
-        return false;
-      }
-      // FIXME } else if(looking_at_then(... for other types
-    } else {
-      // we have a type tag, which isn't a special type to parse
-      // set it as our dict tag
-      char tag_str[128];
-      if(!read_str(type, 128, tag_str, &at)) return false;
-      tag = PL_new_atom(tag_str);
-      printf("got tag: %s\n", tag_str);
-    }
-  }
-  printf("parsing object keyvals\n");
+
   // PENDING: we could have a dynarray, but this should be plenty
-  #define MAX_KEYS 256
-  atom_t keys[MAX_KEYS];
-  term_t vals[MAX_KEYS];
+  atom_t keys[MAX_OBJECT];
+  term_t vals[MAX_OBJECT];
   size_t k=0;
   skipws(&at);
   if(*at == '}') { at++;  goto done; } // empty object (apart from possible tag)
   while(true) {
-    if(k == MAX_KEYS) {
-      fprintf(stderr, "Too many object values, can't have more than %d\n", MAX_KEYS);
+    if(k == MAX_OBJECT) {
+      fprintf(stderr, "Too many object values, can't have more than %d\n", MAX_OBJECT);
       return false;
     }
     term_t key, val;
 
-    printf("at: %c\n", *at);
     expect(*at == '"'); // keys must be strings
-    char keyname[128];
+    char keyname[MAX_KEY_LEN];
     if(!read_str(at, 128, keyname, &at)) return false;
-    printf("parsed key: %s\n", keyname);
-    key = PL_new_atom(keyname);
-
     skipws(&at);
     expect(*at == ':'); at++; // must have ':' between key and value
     skipws(&at);
+
+    if(keyname[0] == '@') {
+      if(strcmp(keyname, "@type")==0) {
+        // this is a tag for the object or a special type
+        if(!read_str(at, MAX_KEY_LEN, type, &at)) return false;
+        has_type = true;
+        if(has_value) {
+          skipws(&at);
+          expect(*at == '}'); at++;
+          *after = at;
+          return parse_special(to, type, value);
+        }
+        goto next;
+      } else if(strcmp(keyname, "@value")==0) {
+        if(!read_str(at, MAX_VALUE_LEN, value, &at)) return false;
+        has_value = true;
+        if(has_type) {
+          skipws(&at);
+          expect(*at == '}'); at++;
+          *after = at;
+          return parse_special(to, type, value);
+        }
+        goto next;
+      }
+    }
+
+    key = PL_new_atom(keyname);
     val = PL_new_term_ref();
     if(!json_parse(at, val, &at)) return false;
-    printf("parsed val\n");
-    skipws(&at);
     keys[k] = key;
     vals[k] = val;
     k++;
+
+  next:
+
     skipws(&at);
     if(*at == ',') {
       at++;
@@ -238,21 +251,15 @@ static bool parse_object(char *at, term_t to, char **after) {
  done:
   *after = at;
   // construct the dict
-  printf("got %zu key/val pairs\n", k);
   term_t valterms = PL_new_term_refs(k);
   for(size_t i=0; i<k; i++) {
-    printf("unify val %zu\n", i);
     if(!PL_unify((valterms+i),vals[i])) return false;
   }
-  printf("done\n");
   term_t dict = PL_new_term_ref();
+  if(has_type) tag = PL_new_atom(type);
   if(!PL_put_dict(dict, tag, k, keys, valterms)) return false;
-  printf("dict done\n");
   return PL_unify_term(to, PL_TERM, dict);
-  //term_t dict = PL_new_term_ref();
-  //if(!PL_put_dict(dict, tag, k, keys, valterms)) return false;
 
-  //return PL_unify(to, dict);
 }
 
 typedef struct ListParse {
@@ -291,7 +298,6 @@ static ListParse parse_list_(bool first, char *at, char **after) {
 static bool parse_list(char *at, term_t to, char **after) {
   ListParse l = parse_list_(true, at+1, after);
   if(l.success) {
-    printf("success\n");
     return PL_unify(l.item, to);
   } else {
     return false;
@@ -327,7 +333,6 @@ bool json_parse(char *at, term_t to, char **after) {
 }
 
 bool json_parse_toplevel(char *at, term_t to) {
-  printf("PARSE: %s\n", at);
   char *after;
   if(!json_parse(at, to, &after)) return false;
   skipws(&after);
