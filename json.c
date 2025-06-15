@@ -203,7 +203,8 @@ static bool parse_object(char *at, term_t to, char **after) {
     expect(*at == ':'); at++; // must have ':' between key and value
     skipws(&at);
 
-    if(keyname[0] == '@') {
+    // Have @type or @value special string value
+    if(keyname[0] == '@' && *at == '"') {
       if(strcmp(keyname, "@type")==0) {
         // this is a tag for the object or a special type
         if(!read_str(at, MAX_KEY_LEN, type, &at)) return false;
@@ -250,6 +251,18 @@ static bool parse_object(char *at, term_t to, char **after) {
 
  done:
   *after = at;
+
+  // If we got a @value, without @type, add that here
+  if(has_value) {
+    if(k == MAX_OBJECT) {
+      fprintf(stderr, "Too many object values, can't have more than %d\n", MAX_OBJECT);
+      return false;
+    }
+    keys[k] = PL_new_atom("@value");
+    vals[k] = PL_new_term_ref();
+    if(!PL_put_string_chars(vals[k], value)) return false;
+    k++;
+  }
   // construct the dict
   term_t valterms = PL_new_term_refs(k);
   for(size_t i=0; i<k; i++) {
@@ -258,7 +271,7 @@ static bool parse_object(char *at, term_t to, char **after) {
   term_t dict = PL_new_term_ref();
   if(has_type) tag = PL_new_atom(type);
   if(!PL_put_dict(dict, tag, k, keys, valterms)) return false;
-  return PL_unify_term(to, PL_TERM, dict);
+  return PL_unify(to, dict);
 
 }
 

@@ -7,6 +7,7 @@
 :- set_prolog_flag(xt_connection_info, "host=localhost port=5433 dbname=xtdb").
 :- set_prolog_flag(xt_debug, false).
 :- use_foreign_library(foreign(swixt)).
+:- dynamic xt_connection/2.
 
 % Convert from Prolog term into a Oid-String representation for postgres API
 xt_type(true, 16-true).
@@ -27,46 +28,31 @@ doit(X,A, R) :-
                         swixt_pg_query(Conn,X,TypedArgs,R)),
                        swixt_pg_close(Conn)).
 
-connect(ConnectionName, Host, Port) :-
-    current_prolog_flag(xt_odbc_driver, D),
-    atomic_list_concat(
-        ['Driver={', D, '};Server=', Host, ';Port=', Port, ';Database=xtdb;Uid=;Pwd='],
-        DriverString),
-    odbc_connect(ConnectionName, _,
-                 [ driver_string(DriverString), alias(ConnectionName) ]).
+connect(ConnectionName, ConnectionInfo) :-
+    retractall(xt_connection(ConnectionName,_)),
+    swixt_pg_connect(ConnectionInfo, Conn),
+    asserta(xt_connection(ConnectionName, Conn)).
 
-connect(Host,Port) :-
-    current_prolog_flag(xt_connection, Con),
-    connect(Con,Host,Port).
+connect(ConnectionInfo) :- connect(xt_conn, ConnectionInfo).
 
-connect(Host) :- connect(Host,5432).
-connect :- connect('localhost').
+connect :- current_prolog_flag(xt_connection_info, ConnInfo),
+           connect(ConnInfo).
 
-odbc_q(Con, SQL, Results) :-
-    odbc_query(Con, SQL, Results, [source(true)]).
+disconnect(ConnectionName) :-
+    xt_connection(ConnectionName, Conn),
+    swixt_pg_close(Conn),
+    retractall(xt_connection(ConnectionName, Conn)).
 
-odbc_q(SQL, Results) :-
-    current_prolog_flag(xt_connection, Con),
-    odbc_q(Con, SQL, Results).
-
-q(Sql, Parameters, Results) :-
-    maplist(nth0(0), Parameters, ArgTypes),
-    maplist(nth0(1), Parameters, ArgVals),
-    odbc_prepare(mydb, Sql, ArgTypes, Qid),
-    odbc_execute(Qid, ArgVals, Results),
-    odbc_free_statement(Qid).
+disconnect :- disconnect(xt_conn).
 
 
-xt_post(Path, Json, Results) :-
-    current_prolog_flag(xt_url, BaseUrl),
-    format(atom(Url), '~w/~w', [BaseUrl,Path]),
-    http_open(Url, Stream, [post(json(Json))]),
-    json_read_dict(Stream, Results, [tag('@type'),default_tag(data)]).
+query(ConnectionName, Sql, Args, Results) :-
+    xt_connection(ConnectionName, Conn),
+    maplist(xt_type, Args, TypedArgs),
+    swixt_pg_query(Conn, Sql, TypedArgs, Results).
 
 query(Sql, Args, Results) :-
-    to_json(Args, JsonArgs),
-    xt_post(query, d{sql: Sql, queryOpts: d{args: JsonArgs}}, Results0),
-    once(json_prolog(Results0, Results)).
+    query(xt_conn, Sql, Args, Results).
 
 to_arg_ref(N,Ref) :- format(atom(Ref), '$~d', [N]).
 
