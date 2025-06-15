@@ -3,6 +3,7 @@
 :- use_module(library(odbc)).
 :- use_module(library(yall)).
 :- use_module(library(apply)).
+:- use_module(library(http/json)).
 :- set_prolog_flag(xt_connection_info, "host=localhost port=5433 dbname=xtdb").
 :- set_prolog_flag(xt_debug, false).
 :- use_foreign_library(foreign(swixt)).

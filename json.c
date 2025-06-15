@@ -163,9 +163,10 @@ static bool parse_timestamp(char *at, term_t to,  char **after) {
 
 
 static bool parse_object(char *at, term_t to, char **after) {
+  expect(*at == '{'); at++;
   char *type;
-  atom_t tag = PL_new_atom("json");
-  if(looking_at_then(at+1, "\"@type\":", &type)) {
+  atom_t tag = 0;
+  if(looking_at_then(at, "\"@type\":", &type)) {
     // begins with a json-ld type annotation
     // check if we have a predefined known type
     char *value;
@@ -191,11 +192,67 @@ static bool parse_object(char *at, term_t to, char **after) {
       printf("got tag: %s\n", tag_str);
     }
   }
+  printf("parsing object keyvals\n");
+  // PENDING: we could have a dynarray, but this should be plenty
+  #define MAX_KEYS 256
+  atom_t keys[MAX_KEYS];
+  term_t vals[MAX_KEYS];
+  size_t k=0;
+  skipws(&at);
+  if(*at == '}') { at++;  goto done; } // empty object (apart from possible tag)
+  while(true) {
+    if(k == MAX_KEYS) {
+      fprintf(stderr, "Too many object values, can't have more than %d\n", MAX_KEYS);
+      return false;
+    }
+    term_t key, val;
 
-  // read regular dict fields
-  term_t vals = PL_new_term_refs(6);
-    //FIXME: read all into dynamic array, then create the dict
-  return false;
+    printf("at: %c\n", *at);
+    expect(*at == '"'); // keys must be strings
+    char keyname[128];
+    if(!read_str(at, 128, keyname, &at)) return false;
+    printf("parsed key: %s\n", keyname);
+    key = PL_new_atom(keyname);
+
+    skipws(&at);
+    expect(*at == ':'); at++; // must have ':' between key and value
+    skipws(&at);
+    val = PL_new_term_ref();
+    if(!json_parse(at, val, &at)) return false;
+    printf("parsed val\n");
+    skipws(&at);
+    keys[k] = key;
+    vals[k] = val;
+    k++;
+    skipws(&at);
+    if(*at == ',') {
+      at++;
+      skipws(&at);
+    } else {
+      expect(*at == '}');
+      at++;
+      goto done;
+    }
+  }
+
+ done:
+  *after = at;
+  // construct the dict
+  printf("got %zu key/val pairs\n", k);
+  term_t valterms = PL_new_term_refs(k);
+  for(size_t i=0; i<k; i++) {
+    printf("unify val %zu\n", i);
+    if(!PL_unify((valterms+i),vals[i])) return false;
+  }
+  printf("done\n");
+  term_t dict = PL_new_term_ref();
+  if(!PL_put_dict(dict, tag, k, keys, valterms)) return false;
+  printf("dict done\n");
+  return PL_unify_term(to, PL_TERM, dict);
+  //term_t dict = PL_new_term_ref();
+  //if(!PL_put_dict(dict, tag, k, keys, valterms)) return false;
+
+  //return PL_unify(to, dict);
 }
 
 typedef struct ListParse {
@@ -272,7 +329,7 @@ bool json_parse(char *at, term_t to, char **after) {
 bool json_parse_toplevel(char *at, term_t to) {
   printf("PARSE: %s\n", at);
   char *after;
-  json_parse(at, to, &after);
+  if(!json_parse(at, to, &after)) return false;
   skipws(&after);
   return *after == 0;
 }
