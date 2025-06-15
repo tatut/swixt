@@ -207,8 +207,8 @@ static foreign_t pl_query(term_t conn_handle, term_t query, term_t args,
     //     argc);
     res =
         PQexecParams(conn, s, argc, query_arg_types, query_args, NULL, NULL, 1);
-
-    if(PQresultStatus(res) == PGRES_TUPLES_OK) {
+    ExecStatusType status = PQresultStatus(res);
+    if(status == PGRES_TUPLES_OK) {
       PL_fid_t fid = PL_open_foreign_frame();
 
       //printf("pq result ok! %d\n", PQntuples(res));
@@ -247,6 +247,8 @@ static foreign_t pl_query(term_t conn_handle, term_t query, term_t args,
         row--;
       }
       success = PL_unify(result, RESULT);
+    } else if (status == PGRES_COMMAND_OK) {
+      return true;
     } else {
       fprintf(stderr, "Query failed: %s", PQresultErrorMessage(res));
       fail();

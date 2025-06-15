@@ -19,7 +19,7 @@ xt_type(X, 20-X) :- integer(X).
 xt_type(X, 25-X) :- string(X).
 xt_type(X, 25-X) :- atom(X).
 % ^ FIXME: move type case to C side?
-% we create the dicts there
+
 
 doit(X,A, R) :-
     current_prolog_flag(xt_connection_info, ConnInfo),
@@ -76,12 +76,13 @@ status(Status) :-
     http_open(Url, Stream, []),
     json_read_dict(Stream, Status, [tag('@type'),default_tag(xt)]).
 
-tx(TxOpCalls, tx{systemTime: SystemTime, id: TxId}) :-
+tx(TxOpCalls) :-
     maplist([TxOpCall,TxOp]>>(call(TxOpCall, TxOp)), TxOpCalls, TxOps),
-    once(json_prolog(TxOpsJson, TxOps)),
-    xt_post(tx, tx{txOps: TxOpsJson}, Result),
-    _{'systemTime': SystemTimeStr, 'txId': TxId} :< Result,
-    string_datetimetz(SystemTimeStr, SystemTime).
+    query("BEGIN", [], _),
+    forall(member(tx{sql: SQL, argRows: [Args]}, TxOps),
+           query(SQL, Args, Result)),
+    query("COMMIT", [], _).
+
 
 %%% State
 % The state of building a SQL query consists of a dict that contains the
