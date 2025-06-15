@@ -71,7 +71,7 @@ static bool from_db(term_t t, char *data, size_t len, Oid type) {
   case 23: // int4
     return PL_put_int64(t, htonl(*((int32_t*)data)));
   case 25: // text
-    return PL_put_string_nchars(t, len, data);
+    return PL_put_chars(t, PL_STRING|REP_UTF8, len, data);
   case 114: // json
     return json_parse_toplevel(data, t);
   case 701: // float8
@@ -79,7 +79,7 @@ static bool from_db(term_t t, char *data, size_t len, Oid type) {
     dbl.int_val = htonll(dbl.int_val);
     return PL_put_float(t, dbl.double_val);
   default:
-    return PL_put_string_nchars(t, len, data);
+    return PL_put_chars(t, PL_STRING|REP_UTF8, len, data);
   }
 }
 

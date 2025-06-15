@@ -260,7 +260,7 @@ static bool parse_object(char *at, term_t to, char **after) {
     }
     keys[k] = PL_new_atom("@value");
     vals[k] = PL_new_term_ref();
-    if(!PL_put_string_chars(vals[k], value)) return false;
+    if(!PL_put_chars(vals[k], PL_STRING|REP_UTF8, strlen(value), value)) return false;
     k++;
   }
   // construct the dict
