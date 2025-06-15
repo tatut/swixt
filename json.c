@@ -127,15 +127,20 @@ static bool read_int(char *at, long *num, char **after) {
   return true;
 }
 
+static bool parse_datepart(char *at, long *year, long *month, long *day, char **after) {
+  expect(read_int(at, year, &at));
+  expect(*at == '-'); at++;
+  expect(read_int(at, month, &at));
+  expect(*at == '-'); at++;
+  expect(read_int(at, day, &at));
+  *after = at;
+  return true;
+}
 
 static bool parse_timestamp(term_t to, char *at) {
   long year, month, day, hour, minute, seconds=0, micros=0;
   // 2025-06-14T17:45:12.666420 (seconds and micros optional)
-  expect(read_int(at, &year, &at));
-  expect(*at == '-'); at++;
-  expect(read_int(at, &month, &at));
-  expect(*at == '-'); at++;
-  expect(read_int(at, &day, &at));
+  if(!parse_datepart(at, &year, &month, &day, &at)) return false;
   expect(*at == 'T'); at++;
   expect(read_int(at, &hour, &at));
   expect(*at == ':'); at++;
@@ -160,12 +165,20 @@ static bool parse_timestamp(term_t to, char *at) {
                        PL_LONG, micros);
 }
 
+static bool parse_date(term_t to, char *at) {
+  long year, month, day;
+  if(!parse_datepart(at, &year, &month, &day, &at)) return false;
+  expect(*at == 0);
+  return PL_unify_term(to,
+                       PL_FUNCTOR_CHARS, "date", 3,
+                       PL_LONG, year, PL_LONG, month, PL_LONG, day);
+}
+
 static bool parse_special(term_t to, char *type, char *value) {
   if(strcmp(type, "xt:timestamp")==0) {
     return parse_timestamp(to, value);
   } else if(strcmp(type, "xt:date")==0) {
-    // FIXME;
-    return false;
+    return parse_date(to, value);
   } else {
     fprintf(stderr, "Unrecognized special @type: %s\n", type);
     return false;
@@ -347,7 +360,9 @@ bool json_parse(char *at, term_t to, char **after) {
 
 bool json_parse_toplevel(char *at, term_t to) {
   char *after;
+  printf("PARSE: %s\n", at);
   if(!json_parse(at, to, &after)) return false;
   skipws(&after);
+  printf(" => OK\n");
   return *after == 0;
 }

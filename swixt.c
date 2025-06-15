@@ -59,7 +59,7 @@ static foreign_t pl_close(term_t conn_handle) {
 #define MAX_ARGS 32
 
 static bool from_db(term_t t, char *data, size_t len, Oid type) {
-  //printf("from db: %zu, oid: %d\n", len, type);
+  printf("from db: %zu, oid: %d\n", len, type);
   union {
     uint64_t int_val;
     double double_val;
