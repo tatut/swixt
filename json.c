@@ -137,21 +137,31 @@ static bool parse_datepart(char *at, long *year, long *month, long *day, char **
   return true;
 }
 
+static bool parse_timepart(char *at, long *hour, long *minute, long *seconds, long *micros, char **after) {
+  *seconds = 0;
+  *micros = 0;
+  expect(read_int(at, hour, &at));
+  expect(*at == ':'); at++;
+  expect(read_int(at, minute, &at));
+  if(*at == 0) goto end;
+  expect(*at == ':'); at++;
+  expect(read_int(at, seconds, &at));
+  if(*at == 0) goto end;
+  expect(*at == '.'); at++;
+  expect(read_int(at, micros, &at));
+ end:
+  *after = at;
+  return true;
+}
+
 static bool parse_timestamp(term_t to, char *at) {
   long year, month, day, hour, minute, seconds=0, micros=0;
   // 2025-06-14T17:45:12.666420 (seconds and micros optional)
   if(!parse_datepart(at, &year, &month, &day, &at)) return false;
   expect(*at == 'T'); at++;
-  expect(read_int(at, &hour, &at));
-  expect(*at == ':'); at++;
-  expect(read_int(at, &minute, &at));
-  if(*at == 0) goto end;
-  expect(*at == ':'); at++;
-  expect(read_int(at, &seconds, &at));
-  if(*at == '"') goto end;
-  expect(*at == '.'); at++;
-  expect(read_int(at, &micros, &at));
- end:
+  printf("parsed datepart, timepart: %s\n", at);
+  if(!parse_timepart(at, &hour, &minute, &seconds, &micros, &at)) return false;
+  printf("parsed timepart, rest: %s\n", at);
   // construct the term and read the ending '"'
   expect(*at == 0);
   return PL_unify_term(to,
@@ -174,15 +184,35 @@ static bool parse_date(term_t to, char *at) {
                        PL_LONG, year, PL_LONG, month, PL_LONG, day);
 }
 
+static bool parse_time(term_t to, char *at) {
+  long hour,minute,seconds,micros;
+  if(!parse_timepart(at, &hour, &minute, &seconds, &micros, &at)) return false;
+  expect(*at == 0);
+  return PL_unify_term(to, PL_FUNCTOR_CHARS, "time", 4,
+                       PL_LONG, hour, PL_LONG, minute,
+                       PL_LONG, seconds, PL_LONG, micros);
+}
+
 static bool parse_special(term_t to, char *type, char *value) {
-  if(strcmp(type, "xt:timestamp")==0) {
+  if(!(type[0] == 'x' && type[1] == 't' && type[2] == ':')) goto fail;
+  if(strcmp(type+3, "timestamp")==0) {
     return parse_timestamp(to, value);
-  } else if(strcmp(type, "xt:date")==0) {
+  } else if(strcmp(type+3, "date")==0) {
     return parse_date(to, value);
-  } else {
-    fprintf(stderr, "Unrecognized special @type: %s\n", type);
-    return false;
+  } else if(strcmp(type+3, "time")==0) {
+    return parse_time(to, value);
+  } else if(strcmp(type+3, "uuid")==0) {
+    term_t uuid = PL_new_term_ref();
+    if(!PL_put_string_chars(uuid, value)) return false;
+    // PENDING: should use 16 byte compound term instead of string?
+    // string is way more human readable, but a little longer
+    return PL_unify_term(to, PL_FUNCTOR_CHARS, "uuid", 1,
+                         PL_TERM, uuid);
   }
+ fail:
+  fprintf(stderr, "Unrecognized special @type: %s\n", type);
+  return false;
+
 }
 
 #define MAX_KEY_LEN 128

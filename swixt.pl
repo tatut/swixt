@@ -1,6 +1,4 @@
 :- module(swixt, [q/1, q/2, insert/2, delete/2, status/1, tx/2]).
-:- use_module(xtdb_mapping, [json_prolog/2, to_json/2, string_datetimetz/2]).
-:- use_module(library(odbc)).
 :- use_module(library(yall)).
 :- use_module(library(apply)).
 :- use_module(library(http/json)).
