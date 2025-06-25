@@ -272,6 +272,23 @@ static bool expect_simple(PgConn *c, char msg) {
   return true;
 }
 
+static bool expect_ready(PgConn *c) {
+  char msg[6];
+  if(read(c->sockfd, msg, 6) != 6) {
+    fprintf(stderr, "Could not read from socket.\n");
+  }
+  if('Z' != msg[0]) {
+    fprintf(stderr, "Expected ready (Z) message, got: %c\n", msg[0]);
+    return false;
+  }
+  int size = ntohl(*((int32_t*)&msg[1]));
+  if(size != 5) {
+    fprintf(stderr, "Unexpected size in ready message, expected 5, got: %d\n", size);
+    return false;
+  }
+  return true;
+}
+
 /* Issue a query, sends parse and bind messages. */
 PgResult query(PgConn *c, const char* sql, int num_params, int *param_oids,
                char **param_data) {
@@ -347,6 +364,7 @@ PgRow pg_next_row(PgConn *c, PgResult *res) {
     return (PgRow) { true, true };
   } else if(m.type == 'C') {
     // CommandComplete
+    if(!expect_ready(c)) goto fail;
     return (PgRow) { true, false };
   } else {
     fprintf(stderr, "Unexpected message from server: %c\n", m.type);
@@ -385,26 +403,6 @@ PgVal pg_value(PgConn *c, PgResult *res, int field) {
     return (PgVal) { false, false, 0, NULL };
 }
 
-/* { */
-/*   // expect a parse complete message */
-/*   PgMessage m = { 0, 0, data }; */
-
-/*   printf("read: %zd\n", read(c->sockfd, data, 1)); */
-/*   printf("READ: %c\n", data[0]); */
-
-/*   if(!read_message(c, &m, len)) { */
-/*     return false; */
-/*   } */
-/*   printf("read message\n"); */
-/*   if(m.type == '1') { */
-/*     return true; */
-/*   } else { */
-/*     fprintf(stderr, "Expected ParseComplete message, got: %c\n", m.type); */
-/*     return false; */
-/*   } */
-/* } */
-
-
 int main(int argc, char *argv[]) {
 
   PgConn *c = pg_connect("host=localhost port=5433");
@@ -432,7 +430,7 @@ int main(int argc, char *argv[]) {
         PgVal v = pg_value(c, &res, i);
         if(!v.success) break;
         if(v.is_null) { printf("col %d is NULL\n", i); }
-        else { printf("col %d has data len: %d => %s\n", i, v.len, v.data); }
+        else { printf("col %d has data len: %zu => %s\n", i, v.len, v.data); }
       }
     }
 
