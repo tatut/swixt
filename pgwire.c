@@ -289,8 +289,10 @@ static bool expect_ready(PgConn *c) {
   return true;
 }
 
+void pg_clear(PgConn *c) { c->buf_pos = 0; }
+
 /* Issue a query, sends parse and bind messages. */
-PgResult query(PgConn *c, const char* sql, int num_params, int *param_oids,
+PgResult pg_query(PgConn *c, const char* sql, int num_params, int *param_oids,
                char **param_data) {
   if(!put_parse(c, sql, num_params, param_oids)) goto fail;
   if(!put_bind(c, num_params, param_data)) goto fail;
@@ -403,6 +405,7 @@ PgVal pg_value(PgConn *c, PgResult *res, int field) {
     return (PgVal) { false, false, 0, NULL };
 }
 
+/*
 int main(int argc, char *argv[]) {
 
   PgConn *c = pg_connect("host=localhost port=5433");
@@ -410,8 +413,8 @@ int main(int argc, char *argv[]) {
   int oids[] = { 20 };
   char *values[] = { "1" };
 
-  PgResult res = query(c, "SELECT *, 'customer' as \"@type\" FROM customer a  WHERE a._id > $1 ", 1, oids, values);
-  if(res.success) {
+  PgResult res = pg_query(c, "SELECT *, 'customer' as \"@type\" FROM customer a
+WHERE a._id > $1 ", 1, oids, values); if(res.success) {
 
     printf("success!");
     for(int i=0;i<res.fields;i++) {
@@ -439,3 +442,4 @@ int main(int argc, char *argv[]) {
 
   return 0;
 }
+*/

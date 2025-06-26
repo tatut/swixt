@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdbool.h>
 
 typedef struct PgConn {
   int sockfd;
@@ -51,8 +52,8 @@ void pg_clear(PgConn *conn);
  * The result object is valid until the next call to pg_query (which reuses
  * the memory buffers) or until pg_clear is called.
  */
-PgResult *pg_query(PgConn *c, const char* sql, int num_params, int *param_oids,
-                   char **param_data);
+PgResult pg_query(PgConn *c, const char* sql, int num_params, int *param_oids,
+                  char **param_data);
 
 /* Get oid and name of a field.
  * Name pointer may be invalidated when more data is read.

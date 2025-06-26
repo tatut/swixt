@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "libpq-fe.h"
+#include "pgwire.h"
 #include "SWI-Prolog.h"
 //#include "SWI-Stream.h"
 #include <stdbool.h>
@@ -12,8 +12,8 @@
 static foreign_t pl_connect(term_t connstr, term_t CONN) {
   char *s;
   if(PL_get_chars(connstr, &s, CVT_ALL|REP_UTF8)) {
-    PGconn *conn = PQconnectdb(s);
-    if(PQstatus(conn) != CONNECTION_OK) {
+    PgConn *conn = pg_connect(s);
+    if(!conn) {
       fprintf(stderr, "Connection failed with: %s\n", s);
       return false;
     }
@@ -25,40 +25,39 @@ static foreign_t pl_connect(term_t connstr, term_t CONN) {
       goto fail;
     return PL_unify(xtconn, CONN);
   fail:
-    PQfinish(conn);
+    if(conn) pg_close(conn);
     return false;
   } else {
     return false;
   }
-
 }
 
-PGconn *get_connection(term_t conn_handle) {
+PgConn *get_connection(term_t conn_handle) {
   term_t pointer = PL_new_term_ref();
   if (!PL_get_arg(1, conn_handle, pointer)) {
     term_t except = PL_unify_term(except, PL_FUNCTOR_CHARS, "invalid_xtconn");
     PL_raise_exception(except);
     return NULL;
   }
-  PGconn *conn;
+  PgConn *conn;
   if (!PL_get_uint64_ex(pointer, (uint64_t *)&conn))
     return NULL;
   return conn;
 }
 
 static foreign_t pl_close(term_t conn_handle) {
-  PGconn *conn = get_connection(conn_handle);
+  PgConn *conn = get_connection(conn_handle);
   if (conn == NULL) {
     return false;
   } else {
-    PQfinish(conn);
+    pg_close(conn);
     return true;
   }
 }
 
 #define MAX_ARGS 32
 
-static bool from_db(term_t t, char *data, size_t len, Oid type) {
+static bool from_db(term_t t, char *data, size_t len, int type) {
   printf("from db: %zu, oid: %d\n", len, type);
   union {
     uint64_t int_val;
@@ -88,7 +87,7 @@ typedef struct Arr {
   bool success;
 } Arr;
 
-static Arr from_db_array_(char *data, Oid type, size_t nitems) {
+static Arr from_db_array_(char *data, int type, size_t nitems) {
   if (nitems == 0) {
     return (Arr){PL_new_nil_ref(), true};
   } else {
@@ -112,10 +111,9 @@ static Arr from_db_array_(char *data, Oid type, size_t nitems) {
   return (Arr){0, false};
 }
 
-static bool from_db_array(term_t to, PGresult *res, size_t row, size_t field) {
+static bool from_db_array(term_t to, char *data) {
   // 20 byte header: ndim, has_null, element_type, dim_size, lower_bound (all
   // int32)
-  char *data = PQgetvalue(res, row, field);
   int ndim = ntohl(*((int32_t *)data));
   if (ndim != 1) {
     fprintf(stderr, "Only 1 dimensional arrays are supported at the moment, ndim: %d\n", ndim);
@@ -142,37 +140,35 @@ static bool from_db_array(term_t to, PGresult *res, size_t row, size_t field) {
   }
 
 }
-static bool from_db_value(term_t to, PGresult *res, size_t row, size_t field) {
+static bool from_db_value(term_t to, PgVal res, int type) {
   int64_t num;
-  if (PQgetisnull(res, row, field)) {
+  if (res.is_null) {
     return PL_put_atom_chars(to, "nil");
   }
-  Oid type = PQftype(res, field);
+
 
   switch (type) {
     // array types
   case 1007: // int4
   case 1009: // text
   case 1016: // int8
-    return from_db_array(to, res, row, field);
+    return from_db_array(to, res.data);
 
     // regular value
   default:
-    return from_db(to, PQgetvalue(res, row, field),
-                   PQgetlength(res, row, field),
-                   PQftype(res, field));
+    return from_db(to, res.data, res.len, type);
   }
 }
 
 static foreign_t pl_query(term_t conn_handle, term_t query, term_t args,
                           term_t RESULT) {
 #define fail() { success = false; goto end; }
-  PGresult *res;
-  PGconn *conn;
+  PgResult res;
+  PgConn *conn;
   bool success;
   char *s;
-  const char *query_args[MAX_ARGS];
-  Oid query_arg_types[MAX_ARGS];
+  char *query_args[MAX_ARGS];
+  int query_arg_types[MAX_ARGS];
   int argc = 0;
   conn = get_connection(conn_handle);
   if(conn == NULL) return false;
@@ -194,7 +190,7 @@ static foreign_t pl_query(term_t conn_handle, term_t query, term_t args,
         if(!PL_get_uint64(arg_oid, &oid)) fail();
         //printf("arg %d: %s (OID: %llu)\n", argc, s, oid);
         query_args[argc] = malloc(strlen(s) + 1);
-        query_arg_types[argc] = (const Oid) oid;
+        query_arg_types[argc] = oid;
         strcpy((char*)query_args[argc], s);
         argc++;
       }
@@ -205,59 +201,63 @@ static foreign_t pl_query(term_t conn_handle, term_t query, term_t args,
   if(PL_get_chars(query, &s, CVT_ALL|REP_UTF8)) {
     //printf("thread(%d) running query: %s (argc: %d)\n", PL_thread_self(), s,
     //     argc);
-    res =
-        PQexecParams(conn, s, argc, query_arg_types, query_args, NULL, NULL, 1);
-    ExecStatusType status = PQresultStatus(res);
-    if(status == PGRES_TUPLES_OK) {
-      PL_fid_t fid = PL_open_foreign_frame();
+    res = pg_query(conn, s, argc, query_arg_types, query_args);
+    if(!res.success) fail();
+
+    if(res.fields) {
 
       //printf("pq result ok! %d\n", PQntuples(res));
-      size_t nfields = PQnfields(res);
+      size_t nfields = res.fields;
 
       term_t result = PL_new_nil_ref();
 
-      int row = PQntuples(res) - 1;
       size_t tag_field = -1;
       atom_t table_tag = 0;
       atom_t field_tags[nfields];
+      int types[nfields];
+
       for (size_t f = 0; f < nfields; f++) {
-        if (strcmp(PQfname(res, f), "@type") == 0) {
+        char *name;
+        if(!pg_field(conn, res, f, &types[f], &name)) fail();
+        if (strcmp(name, "@type") == 0) {
           tag_field = f;
         } else {
-          field_tags[f] = PL_new_atom(PQfname(res, f));
+          field_tags[f] = PL_new_atom(name);
           //printf("field %ld type is %d\n", f, PQftype(res, f));
         }
       }
-      while(row >= 0) {
+      PgRow row = pg_next_row(conn, &res);
+      while(row.has_row) {
         term_t dict = PL_new_term_ref();
         term_t vals = PL_new_term_refs(nfields - (tag_field == -1 ? 0 : 1));
         size_t ref = 0;
         for (size_t f = 0; f < nfields; f++) {
+          PgVal v = pg_value(conn, &res, f);
           if (f == tag_field) {
-            //printf("table tag: %s\n", PQgetvalue(res, row, f));
-            table_tag = PL_new_atom(PQgetvalue(res, row, f));
+            if(v.is_null) fail();
+            table_tag = PL_new_atom_nchars(v.len, v.data);
           } else {
-            if (!from_db_value((vals + ref), res, row, f))
+            if (!from_db_value((vals + ref), v, types[f]))
               fail();
             ref++;
           }
         }
         if(!PL_put_dict(dict, table_tag, nfields - (tag_field == -1 ? 0 : 1), field_tags, vals)) return false;
         if(!PL_cons_list(result, dict, result)) fail();
-        row--;
+        row = pg_next_row(conn, &res);
       }
       success = PL_unify(result, RESULT);
-    } else if (status == PGRES_COMMAND_OK) {
+    } else if (res.success) {
       return true;
     } else {
-      fprintf(stderr, "Query failed: %s", PQresultErrorMessage(res));
+      fprintf(stderr, "Query failed.\n");
       fail();
     }
   }
 
  end:
   for(int i=0;i<argc;i++) free((void*)query_args[i]);
-  if(res != NULL) PQclear(res);
+  pg_clear(conn);
   return success;
 #undef fail
 }
