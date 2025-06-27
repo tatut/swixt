@@ -209,7 +209,7 @@ static foreign_t pl_query(term_t conn_handle, term_t query, term_t args,
       //printf("pq result ok! %d\n", PQntuples(res));
       size_t nfields = res.fields;
 
-      term_t result = PL_new_nil_ref();
+      term_t result = RESULT; //PL_copy_term_ref(RESULT);
 
       size_t tag_field = -1;
       atom_t table_tag = 0;
@@ -227,8 +227,10 @@ static foreign_t pl_query(term_t conn_handle, term_t query, term_t args,
         }
       }
       PgRow row = pg_next_row(conn, &res);
+      term_t item = PL_new_term_ref();
       while(row.has_row) {
         term_t dict = PL_new_term_ref();
+
         term_t vals = PL_new_term_refs(nfields - (tag_field == -1 ? 0 : 1));
         size_t ref = 0;
         for (size_t f = 0; f < nfields; f++) {
@@ -243,10 +245,11 @@ static foreign_t pl_query(term_t conn_handle, term_t query, term_t args,
           }
         }
         if(!PL_put_dict(dict, table_tag, nfields - (tag_field == -1 ? 0 : 1), field_tags, vals)) return false;
-        if(!PL_cons_list(result, dict, result)) fail();
+
+        if(!PL_unify_list(result, item, result) || !PL_unify(item, dict)) fail();
         row = pg_next_row(conn, &res);
       }
-      success = PL_unify(result, RESULT);
+      success = PL_unify_nil(result);
     } else if (res.success) {
       return true;
     } else {
