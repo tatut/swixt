@@ -10,6 +10,8 @@
 #include <netdb.h>
 #include <string.h>
 #include <stdbool.h>
+#include "SWI-Prolog.h"
+#include "SWI-Stream.h"
 #include "pgwire.h"
 #include "util.h"
 
@@ -255,17 +257,40 @@ static bool put_sync(PgConn *c) {
   return true;
 }
 
+static bool handle_notice(PgConn *c, int size) {
+  if(!pg_ensure_buf(c, size)) return false;
+  char *notice = &c->buf[c->buf_pos];
+  if(read(c->sockfd, notice, size) != size) {
+    err("Unable to read %d bytes for notice.", size);
+    return false;
+  }
+  while(*notice) {
+    if(*notice == 'V' || *notice == 'M') {
+      Sfprintf(Suser_output, "%s ", notice+1);
+    }
+    notice += 2 + strlen(notice+1);
+  }
+  Sfprintf(Suser_output, "\n");
+  return true;
+}
+
 static bool expect_msg(PgConn *c, char msg, int expected_size) {
   char hdr[5];
+ start:
   if(read(c->sockfd, hdr, 5) != 5) {
     err0("Could not read from socket.");
     return false;
+  }
+  int size = ntohl(*((int32_t*)&hdr[1]));
+  if('N' == hdr[0]) {
+    if(!handle_notice(c, size-4)) return false;
+    goto start;
   }
   if(msg != hdr[0]) {
     err("Expected '%c' message from server, got %c.", msg, hdr[0]);
     return false;
   }
-  int size = ntohl(*((int32_t*)&hdr[1]));
+
   if(expected_size != -1 && size != expected_size) {
     err("Unexpected size in '%c' message, expected %d, got: %d", msg, expected_size, size);
     return false;
@@ -284,20 +309,7 @@ static bool expect_msg(PgConn *c, char msg, int expected_size) {
 static bool expect_simple(PgConn *c, char msg) { return expect_msg(c, msg, 4); }
 
 static bool expect_ready(PgConn *c) {
-  char msg[6];
-  if(read(c->sockfd, msg, 6) != 6) {
-    err0("Could not read from socket.");
-  }
-  if('Z' != msg[0]) {
-    err("Expected ready (Z) message, got: %c", msg[0]);
-    return false;
-  }
-  int size = ntohl(*((int32_t*)&msg[1]));
-  if(size != 5) {
-    err("Unexpected size in ready message, expected 5, got: %d", size);
-    return false;
-  }
-  return true;
+  return expect_msg(c, 'Z', 5);
 }
 
 void pg_clear(PgConn *c) { c->buf_pos = 0; }
