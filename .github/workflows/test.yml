@@ -16,5 +16,10 @@ jobs:
     - name: build foreign library
       run: ./build.sh
 
+    - name: wait for xtdb
+      uses: iFaxity/wait-on-action
+      with:
+        tcp: localhost:5432
+
     - name: run tests
       run: for f in *.pl; do swipl -p foreign=. -g run_tests -t halt $f; done
