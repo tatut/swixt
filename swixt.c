@@ -13,6 +13,7 @@
 #ifdef __linux__
 #include <endian.h>
 #define ntohll(x) be64toh(x)
+#define ntohl(x) be32toh(x)
 #endif
 
 static foreign_t pl_connect(term_t connstr, term_t CONN) {
