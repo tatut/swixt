@@ -123,7 +123,7 @@ static bool parse_string(char *at, term_t to, char **after) {
     end++;
   }
   *after = end+1;
-  return PL_unify_string_nchars(to, end-at-1, at+1);
+  return PL_put_chars(to, PL_STRING|REP_UTF8, end-at-1, at+1);
 
  handle_escape:
   /* handle escapes, mutates input char*, keep track of read and write
