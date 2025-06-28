@@ -13,8 +13,8 @@ jobs:
     - name: start xtdb
       run: docker run -d --pull=always -tip 5432:5432 ghcr.io/xtdb/xtdb:nightly-20250627
 
-    - name: wait for port
+    - name: build foreign library
       run: ./build.sh
 
     - name: run tests
-      run: for f in *.pl; do swipl -p foreign=. -D xt_connection_info="host=localhost port=5432" -g run_tests -t halt $f; done
+      run: for f in *.pl; do swipl -p foreign=. -g run_tests -t halt $f; done
