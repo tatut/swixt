@@ -84,7 +84,7 @@ static bool from_db(term_t t, char *data, size_t len, int type) {
     return json_parse_toplevel(data, t);
   case 701: // float8
     memcpy(&dbl.int_val, data, 8);
-    dbl.int_val = htonll(dbl.int_val);
+    dbl.int_val = ntohll(dbl.int_val);
     return PL_put_float(t, dbl.double_val);
   default:
     dbg("Fallback to string for OID: %d\n", type);
