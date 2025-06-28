@@ -167,7 +167,7 @@ static foreign_t pl_query(term_t conn_handle, term_t query, term_t args,
   term_t argval = PL_new_term_ref();
   term_t arg_oid = PL_new_term_ref();
   term_t arg_str = PL_new_term_ref();
-  dbg("start adding args\n");
+  dbg0("start adding args\n");
   term_t head = PL_new_term_ref();
   term_t tail = PL_copy_term_ref(args);
   while(PL_get_list_ex(tail, head, tail)) {
@@ -192,7 +192,7 @@ static foreign_t pl_query(term_t conn_handle, term_t query, term_t args,
 
     if(res.fields) {
 
-      dbg("pq result ok!\n");
+      dbg0("pq result ok!\n");
       size_t nfields = res.fields;
 
       term_t result = PL_copy_term_ref(RESULT);

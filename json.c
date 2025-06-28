@@ -457,6 +457,6 @@ bool json_parse_toplevel(char *at, term_t to) {
   dbg("PARSE: %s", at);
   if(!json_parse(at, to, &after)) return false;
   skipws(&after);
-  dbg(" => OK");
+  dbg0(" => OK");
   return *after == 0;
 }

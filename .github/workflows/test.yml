@@ -14,7 +14,7 @@ jobs:
       run: docker run -d -p 5432:5432 ghcr.io/xtdb/xtdb:nightly-20250627
 
     - name: build foreign library
-      run: ./build.sh
+      run: ./build-debug.sh
 
     - name: wait for xtdb
       uses: iFaxity/wait-on-action@v1.2.1
