@@ -19,7 +19,8 @@ jobs:
     - name: wait for xtdb
       uses: iFaxity/wait-on-action@v1.2.1
       with:
-        tcp: localhost:5432
+        resource: tcp:localhost:5432
+        timeout: 60000
 
     - name: run tests
       run: for f in *.pl; do swipl -p foreign=. -g run_tests -t halt $f; done
