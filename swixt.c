@@ -59,13 +59,14 @@ static foreign_t pl_close(term_t conn_handle) {
 #define MAX_ARGS 32
 
 static bool from_db(term_t t, char *data, size_t len, int type) {
-  //printf("from db: %zu, oid: %d\n", len, type);
   union {
     uint64_t int_val;
     double double_val;
   } dbl;
 
   switch (type) {
+  case 16: // boolean
+    return PL_put_atom_chars(t, *data ? "true" : "false");
   case 20: // int8
     return PL_put_int64(t, htonll(*((int64_t *)data)));
   case 23: // int4
@@ -79,6 +80,7 @@ static bool from_db(term_t t, char *data, size_t len, int type) {
     dbl.int_val = htonll(dbl.int_val);
     return PL_put_float(t, dbl.double_val);
   default:
+    dbg("Fallback to string for OID: %d\n", type);
     return PL_put_chars(t, PL_STRING|REP_UTF8, len, data);
   }
 }
@@ -140,7 +142,6 @@ static bool from_db_value(term_t to, PgVal res, int type) {
 static foreign_t pl_query(term_t conn_handle, term_t query, term_t args,
                           term_t RESULT) {
 #define fail() { success = false; goto end; }
-  printf("do the query!\n");
   PgResult res;
   PgConn *conn;
   bool success;
@@ -176,7 +177,6 @@ static foreign_t pl_query(term_t conn_handle, term_t query, term_t args,
     strcpy((char*)query_args[argc], s);
     argc++;
   }
-  printf("done with args\n");
   if(PL_get_chars(query, &s, CVT_ALL|REP_UTF8)) {
     dbg("thread(%d) running query: %s (argc: %d)", PL_thread_self(), s,
          argc);
