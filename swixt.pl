@@ -357,6 +357,7 @@ raw(SQL, ArgRows, tx{sql: SQL, argRows: ArgRows}).
 :- begin_tests(swixt, [setup(init_test_data)]).
 
 init_test_data :-
+    connect,
     tx([ insert(person{'_id': 1, name: "Max Syöttöpaine"}),
          insert(person{'_id': 2, name: "Barbara Jenkins"}),
 
@@ -366,7 +367,7 @@ init_test_data :-
          insert(todo{'_id': 4, item: "implement operators", done: true}),
          insert(todo{'_id': 5, item: "write tests", done: true, assignee: 1}),
          insert(todo{'_id': 6, item: "gain mass popularity", done: false, assignee: 2})
-       ], _).
+       ]).
 
 test(basic_query_with_id) :-
     q(todo{'_id': 1}, [todo{'_id': 1, item: "make some test data", done: true, assignee: 1}]).
