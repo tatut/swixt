@@ -1,4 +1,4 @@
-:- module(swixt, [q/1, q/2, insert/2, delete/2, status/1, tx/2]).
+:- module(swixt, [q/1, q/2, insert/2, delete/2, status/1, tx/1]).
 :- use_module(library(yall)).
 :- use_module(library(apply)).
 :- use_module(library(http/json)).
@@ -8,23 +8,16 @@
 :- dynamic xt_connection/2.
 
 % Convert from Prolog term into a Oid-String representation for postgres API
-xt_type(true, 16-true).
-xt_type(false, 16-false).
-xt_type(time(H,M,S,Micros), 1083-Str) :- format(string(Str), '~|~`0t~d~2+:~|~`0t~d~2+:~|~`0t~d~2+.~d', [H,M,S,Micros]).
-xt_type(date(Y,M,D), 1082-Str) :- format(string(Str), '~|~`0t~d~4+-~|~`0t~d~2+-~|~`0t~d~2+', [Y,M,D]).
-xt_type(X, 701-X) :- float(X).
-xt_type(X, 20-X) :- integer(X).
-xt_type(X, 25-X) :- string(X).
-xt_type(X, 25-X) :- atom(X).
+xt_type(true, 16-true) :- !.
+xt_type(false, 16-false) :- !.
+xt_type(time(H,M,S,Micros), 1083-Str) :- format(string(Str), '~|~`0t~d~2+:~|~`0t~d~2+:~|~`0t~d~2+.~d', [H,M,S,Micros]), !.
+xt_type(date(Y,M,D), 1082-Str) :- format(string(Str), '~|~`0t~d~4+-~|~`0t~d~2+-~|~`0t~d~2+', [Y,M,D]), !.
+xt_type(X, 701-X) :- float(X), !.
+xt_type(X, 20-X) :- integer(X), !.
+xt_type(X, 25-X) :- string(X), !.
+xt_type(X, 25-X) :- atom(X), !.
 % ^ FIXME: move type case to C side?
 
-
-doit(X,A, R) :-
-    current_prolog_flag(xt_connection_info, ConnInfo),
-    setup_call_cleanup(swixt_pg_connect(ConnInfo, Conn),
-                       (maplist(xt_type, A, TypedArgs),
-                        swixt_pg_query(Conn,X,TypedArgs,R)),
-                       swixt_pg_close(Conn)).
 
 connect(ConnectionName, ConnectionInfo) :-
     retractall(xt_connection(ConnectionName,_)),
@@ -78,7 +71,7 @@ tx(TxOpCalls) :-
     maplist([TxOpCall,TxOp]>>(call(TxOpCall, TxOp)), TxOpCalls, TxOps),
     query("BEGIN", [], _),
     forall(member(tx{sql: SQL, argRows: [Args]}, TxOps),
-           query(SQL, Args, Result)),
+           query(SQL, Args, _Result)),
     query("COMMIT", [], _).
 
 
@@ -299,8 +292,8 @@ where(Field, (^), [ParentField]) -->
 q(Candidate, Results) :-
     dict_pairs(Candidate, Table, Pairs),
     new_state(Table, S0),
-    phrase(handle(Pairs), [S0], [S1]),
-    to_sql(S1, SQL, Args),
+    once(phrase(handle(Pairs), [S0], [S1])),
+    once(to_sql(S1, SQL, Args)),
     debug('FINAL_SQL'(SQL)),
     query(SQL, Args, Results).
 
@@ -332,7 +325,7 @@ delete(Candidate, tx{sql: SQL, argRows: [Args]}) :-
     to_sql_delete(S1, SQL, Args),
     debug('FINAL_DELETE_SQL'(SQL)).
 
-update(Candidate, Fields, TxOp) :-
+update(_Candidate, _Fields, _TxOp) :-
     throw(not_implemented_yet("Use raw to do update for now")).
     %% Candidate determines the where clause
     %% and fields is expression to do an update, fixme: what should be supported?
@@ -382,7 +375,10 @@ test(select_only_some_fields) :-
        todo{'_id':6,done:false}]).
 
 test(ordering) :-
-    tx([ raw("INSERT INTO num (_id, n) VALUES ($1, $2)", [[1, 666], [2, -1234], [3, 420], [4, 13]]) ], _),
+    tx([ insert(num{'_id': 1, n: 666}),
+         insert(num{'_id': 2, n: -1234}),
+         insert(num{'_id': 3, n: 420}),
+         insert(num{'_id': 4, n: 13}) ]),
     q(num{'_only': [n], '_order': n}, [ num{n: -1234}, num{n: 13}, num{n: 420}, num{n: 666} ]),
     q(num{'_only': [n], '_order': n-asc}, [ num{n: -1234}, num{n: 13}, num{n: 420}, num{n: 666} ]),
     q(num{'_only': [n], '_order': n-desc}, [ num{n: 666}, num{n: 420},  num{n: 13}, num{n: -1234} ]),
@@ -411,6 +407,6 @@ ex(todo{done: false,
      todo{'_id':6, assigned:person{'_id':2, name:"Barbara Jenkins"}, assignee:2, done:false, item:"gain mass popularity"}]).
 
 
-test(queries, [forall(ex(Candidate,Results))]) :- q(Candidate,Results).
+test(queries, [forall(ex(Candidate,Results))]) :- once(q(Candidate,Results)).
 
 :- end_tests(swixt).
