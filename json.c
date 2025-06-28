@@ -11,7 +11,8 @@
  * denote a table and the object is turned into a dict with that tag.
  * So {"@type":"customer", "name": "Foo"} becomes customer{name="Foo"}
  *
- * Parsing does not modify the JSON input.
+ * Parsing may modify the JSON input char* to avoid allocating extra
+ * memory.
  */
 #include "SWI-Prolog.h"
 #include <stdbool.h>
@@ -20,6 +21,7 @@
 #include <string.h>
 #include <stdio.h>
 #include "json.h"
+#include "util.h"
 
 #define expect(expr)                                                           \
   if (!(expr))                                                          \
@@ -27,10 +29,8 @@
 
 
 void skipws(char **at) {
-  //printf("skipping, at: %c\n", **at);
   char c = **at;
   while(c == ' ' || c == '\t' || c == '\n' || c == '\r') {
-    //printf("char is %c\n", c);
     *at = *at + 1;
     c = **at;
   }
@@ -106,13 +106,91 @@ static bool read_str(char *at, size_t len, char *to, char **after) {
   to[end-at-1] = 0;
   return true;
 }
+
+static int hex(char ch) {
+  if(ch >= '0' && ch <= '9') return ch - '0';
+  if(ch >= 'A' && ch <= 'F') return ch - ('A' - 10);
+  if(ch >= 'a' && ch <= 'f') return ch - ('a' - 10);
+  return -1;
+}
+
 static bool parse_string(char *at, term_t to, char **after) {
+  char *r, *w;
   // Naive first attempt, just take bytes until '"'
-  // FIXME: support all escapes in JSON strings!
   char *end = at+1;
-  while(*end != '"') end++;
+  while(*end != '"') {
+    if(*end == '\\') goto handle_escape;
+    end++;
+  }
   *after = end+1;
   return PL_unify_string_nchars(to, end-at-1, at+1);
+
+ handle_escape:
+  /* handle escapes, mutates input char*, keep track of read and write
+   * pointers.
+   */
+  r = end;
+  w = end;
+  while(*r != '"') {
+    if(*r == '\\') {
+      r++;
+      switch(*r) {
+      case '"': r++; *w = '"'; w++; break;
+      case 't': r++; *w = '\t'; w++; break;
+      case 'n': r++; *w = '\n'; w++; break;
+      case '\\':r++; *w = '\\'; w++; break;
+      case '/': r++; *w = '/'; w++; break;
+      case 'b': r++; *w = '\b'; w++; break;
+      case 'f': r++; *w = '\f'; w++; break;
+      case 'u': {
+        char hex[5] = { *(r+1), *(r+2), *(r+3), *(r+4), 0 };
+        char *_end;
+        long codepoint = strtol(hex, &_end, 16);
+
+        if(codepoint <= 127) {
+          // single utf-8 byte
+          *w = codepoint;
+          w++;
+        } else if(codepoint <= 2047) {
+          // 2 bytes
+          *w = 0b11000000 + (0b00011111 & (codepoint>>6));
+          w++;
+          *w = 0b10000000 + (0b00111111 & codepoint);
+        } else if(codepoint <= 65535) {
+          *w = 0b11100000 + (0b00001111 & (codepoint>>12));
+          w++;
+          *w = 0b10000000 + (0b00111111 & (codepoint>>6));
+          w++;
+          *w = 0b10000000 + (0b00111111 & codepoint);
+          w++;
+        } else if(codepoint <= 1114111) {
+          *w = 0b11110000 + (0b00000111 & (codepoint>>18));
+          w++;
+          *w = 0b10000000 + (0b00111111 & (codepoint>>12));
+          w++;
+          *w = 0b10000000 + (0b00111111 & (codepoint>>6));
+          w++;
+          *w = 0b10000000 + (0b00111111 & codepoint);
+          w++;
+        }
+        r += 5;
+
+      }
+      }
+    } else {
+      *w = *r;
+      w++; r++;
+    }
+  }
+  size_t len = w-at-1;
+  *after = r+1;
+  term_t str = PL_new_term_ref();
+  if(!PL_put_chars(str, PL_STRING|REP_UTF8, len, at+1)) return false;
+  return PL_unify(str, to);
+
+ fail:
+  return false;
+
 }
 
 static bool read_int(char *at, long *num, char **after) {
@@ -210,7 +288,7 @@ static bool parse_special(term_t to, char *type, char *value) {
                          PL_TERM, uuid);
   }
  fail:
-  fprintf(stderr, "Unrecognized special @type: %s\n", type);
+  err("Unrecognized special @type: %s", type);
   return false;
 
 }
@@ -234,7 +312,7 @@ static bool parse_object(char *at, term_t to, char **after) {
   if(*at == '}') { at++;  goto done; } // empty object (apart from possible tag)
   while(true) {
     if(k == MAX_OBJECT) {
-      fprintf(stderr, "Too many object values, can't have more than %d\n", MAX_OBJECT);
+      err("Too many object values, can't have more than %d", MAX_OBJECT);
       return false;
     }
     term_t key, val;
@@ -298,7 +376,7 @@ static bool parse_object(char *at, term_t to, char **after) {
   // If we got a @value, without @type, add that here
   if(has_value) {
     if(k == MAX_OBJECT) {
-      fprintf(stderr, "Too many object values, can't have more than %d\n", MAX_OBJECT);
+      err("Too many object values, can't have more than %d", MAX_OBJECT);
       return false;
     }
     keys[k] = PL_new_atom("@value");
@@ -318,47 +396,33 @@ static bool parse_object(char *at, term_t to, char **after) {
 
 }
 
-typedef struct ListParse {
-  term_t item;
-  bool success;
-} ListParse;
 
-// list is read by recursing and creating the cons cells
-// when unwinding, so we get the list in proper order
-static ListParse parse_list_(bool first, char *at, char **after) {
+static bool parse_list(char *at, term_t to, char **after) {
+  term_t list = PL_copy_term_ref(to);
+  term_t item = PL_new_term_ref();
+  if(*at != '[') goto fail;
+  at++;
   skipws(&at);
-  if(*at == ']') {
-    // at end of list, set after and return nil ref
-    *after = at + 1;
-    return (ListParse) { PL_new_nil_ref(), true };
-  } else {
+  bool first = true;
+  while(*at != ']') {
     // parse this item, and recursively parse next
     if(!first) {
       if(*at != ',') goto fail;
       at++;
     }
+    first = false;
     skipws(&at);
-    term_t item = PL_new_term_ref();
+    if(!PL_unify_list(list, item, list)) goto fail;
     if(!json_parse(at, item, &at)) goto fail;
-    ListParse rest = parse_list_(false, at, after);
-    if(rest.success) {
-      term_t res = PL_new_term_ref();
-      if(!PL_cons_list(res, item, rest.item)) goto fail;
-      return (ListParse) { res, true };
-    }
+    skipws(&at);
   }
+  // at end of list, set after and return nil ref
+  *after = at + 1;
+  return PL_unify_nil(list);
  fail:
-  return (ListParse) { PL_new_nil_ref(), false };
+    return false;
  }
 
-static bool parse_list(char *at, term_t to, char **after) {
-  ListParse l = parse_list_(true, at+1, after);
-  if(l.success) {
-    return PL_unify(l.item, to);
-  } else {
-    return false;
-  }
-}
 
 bool json_parse(char *at, term_t to, char **after) {
   char ch = *at;
@@ -390,9 +454,9 @@ bool json_parse(char *at, term_t to, char **after) {
 
 bool json_parse_toplevel(char *at, term_t to) {
   char *after;
-  printf("PARSE: %s\n", at);
+  dbg("PARSE: %s", at);
   if(!json_parse(at, to, &after)) return false;
   skipws(&after);
-  printf(" => OK\n");
+  dbg(" => OK");
   return *after == 0;
 }
