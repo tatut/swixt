@@ -94,9 +94,15 @@ PgConn *pg_connect(char *conn_info) {
       char host[128];
       ci += 5;
       extract_val(&ci, host);
-      dbg("host: %s\n", host);
+      dbg("host: %s", host);
       struct hostent *h = gethostbyname(host);
+      if(!h) {
+        err("Unable to resolve host: %s", host);
+        return NULL;
+      }
+
       if(h->h_addrtype == AF_INET) {
+        dbg0("got AF_INET address");
         to.sin_addr = *((struct in_addr **)h->h_addr_list)[0];
       } else {
         err("Unable to resolve host %s, got type %d", host, h->h_addrtype);
@@ -114,7 +120,7 @@ PgConn *pg_connect(char *conn_info) {
         err0("Unable to extract port");
         return NULL;
       }
-      dbg("port: %d\n", port);
+      dbg("port: %d", port);
       to.sin_port = htons(port);
     } else {
       err("Unsupported connection info: %s", ci);
