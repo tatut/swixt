@@ -145,7 +145,10 @@ PgConn *pg_connect(char *conn_info) {
   *((int32_t*)&buf[4]) = htonl(196608); // protocol version
   memcpy(&buf[8], "user\0xtdb\0database\0xtdb\0", 24);
   buf[32] = 0;
-  write(sockfd, buf, len);
+  if(write(sockfd, buf, len) != len) {
+    err0("Couldn't write startup message");
+    goto fail;
+  }
 
   PgConn *c = malloc(sizeof(PgConn));
   c->sockfd = sockfd;
@@ -159,9 +162,9 @@ PgConn *pg_connect(char *conn_info) {
   return c;
 
  fail:
-  if(c->buf) free(c->buf);
+  if(c && c->buf) free(c->buf);
   close(sockfd);
-  free(c);
+  if(c) free(c);
   return NULL;
 }
 
