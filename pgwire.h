@@ -25,7 +25,7 @@ typedef struct PgMessage {
 typedef struct PgResult {
   bool success;
   size_t row_description_start; // row description payload start at buffer position
-  short fields;
+  short fields; // 0 if no data
   int row_start; // data row start (-1 if not read yet)
 } PgResult;
 

@@ -11,6 +11,7 @@
 #include <string.h>
 #include <stdbool.h>
 #include "pgwire.h"
+#include "util.h"
 
 /* Read message from connection socket into *msg.
  * The payload data is stored in connection buffer.
@@ -18,7 +19,7 @@
 static bool read_msg(PgConn *c, PgMessage *msg) {
   char hdr[5];
   if(read(c->sockfd, hdr, 5) != 5) {
-    fprintf(stderr, "Could not read from socket.\n");
+    err0("Could not read from socket.");
     return false;
   }
   msg->type = hdr[0];
@@ -27,7 +28,7 @@ static bool read_msg(PgConn *c, PgMessage *msg) {
   char *data = &c->buf[c->buf_pos];
   ssize_t r = read(c->sockfd, data, msg->len);
   if(r < msg->len) {
-    fprintf(stderr, "Could not read from socket (%zd < %d).\n", r, msg->len);
+    err("Could not read from socket (%zd < %d).", r, msg->len);
     return false;
   }
   msg->data = c->buf_pos;
@@ -96,7 +97,7 @@ PgConn *pg_connect(char *conn_info) {
       if(h->h_addrtype == AF_INET) {
         to.sin_addr = *((struct in_addr **)h->h_addr_list)[0];
       } else {
-        fprintf(stderr, "Unable to resolve host %s, got type %d\n", host, h->h_addrtype);
+        err("Unable to resolve host %s, got type %d", host, h->h_addrtype);
         return NULL;
       }
     } else if(strncmp(ci, "port=", 5)==0) {
@@ -108,13 +109,13 @@ PgConn *pg_connect(char *conn_info) {
       }
       while(*ci == ' ') ci++;
       if(port == 0) {
-        fprintf(stderr, "Unable to extract port\n");
+        err0("Unable to extract port");
         return NULL;
       }
       printf("port: %d\n", port);
       to.sin_port = htons(port);
     } else {
-      fprintf(stderr, "Unsupported connection info: %s\n", ci);
+      err("Unsupported connection info: %s", ci);
       return NULL;
     }
   }
@@ -122,11 +123,11 @@ PgConn *pg_connect(char *conn_info) {
   // connect and send startup message, expect auth ok response
   int sockfd = socket(AF_INET, SOCK_STREAM, 0);
   if(sockfd < 0) {
-    fprintf(stderr, "couldn't create socket\n");
+    err0("couldn't create socket");
     return NULL;
   }
   if(connect(sockfd, (struct sockaddr *)&to, sizeof(to)) < 0) {
-    fprintf(stderr, "connect failed\n");
+    err0("connect failed");
     return NULL;
   }
 
@@ -175,7 +176,7 @@ bool pg_ensure_buf(PgConn *c, size_t extra) {
     }
     char *new_buf = realloc(c->buf, new_size);
     if(new_buf == NULL) {
-      fprintf(stderr, "Unable to allocate more buffer space, at: %zu, need: %zu\n",
+      err("Unable to allocate more buffer space, at: %zu, need: %zu",
               size, new_size);
       return false;
     }
@@ -188,7 +189,7 @@ bool pg_ensure_buf(PgConn *c, size_t extra) {
 /* Send current buffer */
 static bool pg_send(PgConn *c) {
   if(!write(c->sockfd, c->buf, c->buf_pos)) {
-    fprintf(stderr, "Unable to write %zu bytes to socket.\n", c->buf_size);
+    err("Unable to write %zu bytes to socket.", c->buf_size);
     return false;
   }
   c->buf_pos = 0; // reset buffer position
@@ -254,36 +255,46 @@ static bool put_sync(PgConn *c) {
   return true;
 }
 
-static bool expect_simple(PgConn *c, char msg) {
+static bool expect_msg(PgConn *c, char msg, int expected_size) {
   char hdr[5];
   if(read(c->sockfd, hdr, 5) != 5) {
-    fprintf(stderr, "Could not read from socket.\n");
+    err0("Could not read from socket.");
     return false;
   }
   if(msg != hdr[0]) {
-    fprintf(stderr, "Expected %c message from server, got %c.\n", msg, hdr[0]);
+    err("Expected '%c' message from server, got %c.", msg, hdr[0]);
     return false;
   }
   int size = ntohl(*((int32_t*)&hdr[1]));
-  if(size != 4) {
-    fprintf(stderr, "Unexpected size in simple message, expected 4, got: %d\n", size);
+  if(expected_size != -1 && size != expected_size) {
+    err("Unexpected size in '%c' message, expected %d, got: %d", msg, expected_size, size);
     return false;
+  }
+  // Read rest of message
+  if(size > 4) {
+    if(!pg_ensure_buf(c, size - 4)) return false;
+    if(read(c->sockfd, &c->buf[c->buf_pos], size-4) != size-4) {
+      err("Couldn't read %d bytes from socket.", size-4);
+      return false;
+    }
   }
   return true;
 }
 
+static bool expect_simple(PgConn *c, char msg) { return expect_msg(c, msg, 4); }
+
 static bool expect_ready(PgConn *c) {
   char msg[6];
   if(read(c->sockfd, msg, 6) != 6) {
-    fprintf(stderr, "Could not read from socket.\n");
+    err0("Could not read from socket.");
   }
   if('Z' != msg[0]) {
-    fprintf(stderr, "Expected ready (Z) message, got: %c\n", msg[0]);
+    err("Expected ready (Z) message, got: %c", msg[0]);
     return false;
   }
   int size = ntohl(*((int32_t*)&msg[1]));
   if(size != 5) {
-    fprintf(stderr, "Unexpected size in ready message, expected 5, got: %d\n", size);
+    err("Unexpected size in ready message, expected 5, got: %d", size);
     return false;
   }
   return true;
@@ -309,12 +320,17 @@ PgResult pg_query(PgConn *c, const char* sql, int num_params, int *param_oids,
 
   PgMessage msg;
   if(!read_msg(c, &msg)) goto fail;
-  if(msg.type != 'T') {
-    fprintf(stderr, "Expected RowDescription ('B') message, got: %c\n", msg.type);
+  if(msg.type == 'n') {
+    /* got NoData, this executed ok */
+    if(!expect_msg(c, 'C', -1)) goto fail; // expect command complete
+    if(!expect_ready(c)) goto fail;
+    return (PgResult) { true, 0, 0, 0 };
+  } else if(msg.type != 'T') {
+    err("Expected RowDescription ('B') message, got: %c", msg.type);
     goto fail;
   }
   if(msg.len < 2) {
-    fprintf(stderr, "Expected RowDescription len >= 2, got: %u\n", msg.len);
+    err("Expected RowDescription len >= 2, got: %u", msg.len);
     goto fail;
   }
 
@@ -369,7 +385,7 @@ PgRow pg_next_row(PgConn *c, PgResult *res) {
     if(!expect_ready(c)) goto fail;
     return (PgRow) { true, false };
   } else {
-    fprintf(stderr, "Unexpected message from server: %c\n", m.type);
+    err("Unexpected message from server: %c", m.type);
     goto fail;
   }
 
