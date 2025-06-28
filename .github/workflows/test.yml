@@ -17,7 +17,7 @@ jobs:
       run: ./build.sh
 
     - name: wait for xtdb
-      uses: iFaxity/wait-on-action
+      uses: iFaxity/wait-on-action@v1.2.1
       with:
         tcp: localhost:5432
 
