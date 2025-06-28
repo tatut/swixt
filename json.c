@@ -237,9 +237,9 @@ static bool parse_timestamp(term_t to, char *at) {
   // 2025-06-14T17:45:12.666420 (seconds and micros optional)
   if(!parse_datepart(at, &year, &month, &day, &at)) return false;
   expect(*at == 'T'); at++;
-  printf("parsed datepart, timepart: %s\n", at);
+  dbg("parsed datepart, timepart: %s", at);
   if(!parse_timepart(at, &hour, &minute, &seconds, &micros, &at)) return false;
-  printf("parsed timepart, rest: %s\n", at);
+  dbg("parsed timepart, rest: %s", at);
   // construct the term and read the ending '"'
   expect(*at == 0);
   return PL_unify_term(to,

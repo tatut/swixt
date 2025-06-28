@@ -54,11 +54,11 @@ bool read_startup_messages(PgConn *c) {
     case 'K': // cancellation key data
       get_i32(c, m.read, c->pid);
       get_i32(c, m.read, c->secret_key);
-      printf("cid: %d, secret key: %d\n", c->pid, c->secret_key);
+      dbg("cid: %d, secret key: %d", c->pid, c->secret_key);
       break;
       // S=parameter status, Z=ready for query
     case 'S':
-      printf("%s = %s\n", &c->buf[m.data], &c->buf[m.data]+(strlen(&c->buf[m.data])+1));
+      dbg("%s = %s", &c->buf[m.data], &c->buf[m.data]+(strlen(&c->buf[m.data])+1));
       break;
     default: break;
     }
@@ -92,7 +92,7 @@ PgConn *pg_connect(char *conn_info) {
       char host[128];
       ci += 5;
       extract_val(&ci, host);
-      printf("host: %s\n", host);
+      dbg("host: %s\n", host);
       struct hostent *h = gethostbyname(host);
       if(h->h_addrtype == AF_INET) {
         to.sin_addr = *((struct in_addr **)h->h_addr_list)[0];
@@ -112,7 +112,7 @@ PgConn *pg_connect(char *conn_info) {
         err0("Unable to extract port");
         return NULL;
       }
-      printf("port: %d\n", port);
+      dbg("port: %d\n", port);
       to.sin_port = htons(port);
     } else {
       err("Unsupported connection info: %s", ci);
@@ -420,42 +420,3 @@ PgVal pg_value(PgConn *c, PgResult *res, int field) {
  fail:
     return (PgVal) { false, false, 0, NULL };
 }
-
-/*
-int main(int argc, char *argv[]) {
-
-  PgConn *c = pg_connect("host=localhost port=5433");
-
-  int oids[] = { 20 };
-  char *values[] = { "1" };
-
-  PgResult res = pg_query(c, "SELECT *, 'customer' as \"@type\" FROM customer a
-WHERE a._id > $1 ", 1, oids, values); if(res.success) {
-
-    printf("success!");
-    for(int i=0;i<res.fields;i++) {
-      int oid;
-      char *name;
-      pg_field(c, res, i, &oid, &name);
-      printf(" GOT Field %d: %s (type %d)\n", i, name, oid);
-    }
-
-    PgRow r;
-    for(;;) {
-      r = pg_next_row(c, &res);
-      if(!r.has_row) break;
-      printf("got row!\n");
-      for(int i=0;i<res.fields; i++) {
-        PgVal v = pg_value(c, &res, i);
-        if(!v.success) break;
-        if(v.is_null) { printf("col %d is NULL\n", i); }
-        else { printf("col %d has data len: %zu => %s\n", i, v.len, v.data); }
-      }
-    }
-
-
-  }
-
-  return 0;
-}
-*/
