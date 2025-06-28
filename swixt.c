@@ -10,6 +10,11 @@
 #include "json.h"
 #include "util.h"
 
+#ifdef __linux__
+#include <endian.h>
+#define ntohll(x) be64toh(x)
+#endif
+
 static foreign_t pl_connect(term_t connstr, term_t CONN) {
   char *s;
   if(PL_get_chars(connstr, &s, CVT_ALL|REP_UTF8)) {
@@ -68,9 +73,10 @@ static bool from_db(term_t t, char *data, size_t len, int type) {
   case 16: // boolean
     return PL_put_atom_chars(t, *data ? "true" : "false");
   case 20: // int8
-    return PL_put_int64(t, htonll(*((int64_t *)data)));
+
+    return PL_put_int64(t, ntohll(*((int64_t *)data)));
   case 23: // int4
-    return PL_put_int64(t, htonl(*((int32_t*)data)));
+    return PL_put_int64(t, ntohll(*((int32_t*)data)));
   case 25: // text
     return PL_put_chars(t, PL_STRING|REP_UTF8, len, data);
   case 114: // json
