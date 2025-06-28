@@ -17,4 +17,4 @@ jobs:
       run: ./build.sh
 
     - name: run tests
-      run: for f in *.pl; do swipl -g run_tests -t halt $f; done
+      run: for f in *.pl; do swipl -p foreign=. -g run_tests -t halt $f; done
