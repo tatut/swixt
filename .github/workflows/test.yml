@@ -3,6 +3,12 @@ on: [push]
 jobs:
   build:
     runs-on: ubuntu-latest
+    services:
+      xtdb:
+        image: ghcr.io/xtdb/xtdb:nightly-20250627
+        ports:
+          - 5433:5432
+
     steps:
     - name: install swipl
       run: |
@@ -10,8 +16,6 @@ jobs:
         sudo apt-get update
         sudo apt-get install --yes --no-install-recommends swi-prolog postgresql-client
     - uses: actions/checkout@v2
-    - name: start xtdb
-      run: docker run -p 5433:5432 ghcr.io/xtdb/xtdb:nightly-20250627 &
 
     - name: build foreign library
       run: ./build-debug.sh
