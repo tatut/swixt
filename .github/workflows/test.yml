@@ -14,23 +14,11 @@ jobs:
       run: |
         sudo apt-add-repository ppa:swi-prolog/stable
         sudo apt-get update
-        sudo apt-get install --yes --no-install-recommends swi-prolog postgresql-client
+        sudo apt-get install --yes --no-install-recommends swi-prolog
     - uses: actions/checkout@v2
 
     - name: build foreign library
       run: ./build-debug.sh
-
-    - name: wait for xtdb
-      uses: iFaxity/wait-on-action@v1.2.1
-      with:
-        resource: tcp:localhost:5433
-        timeout: 60000
-
-    - name: see images
-      run: docker ps
-
-    - name: test connection
-      run: psql -h localhost -p 5433 xtdb -c "select oid,typname from pg_type"
 
     - name: run tests
       run: for f in *.pl; do swipl -p foreign=. -g run_tests -t halt $f; done
