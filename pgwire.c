@@ -134,6 +134,12 @@ PgConn *pg_connect(char *conn_info) {
     err0("couldn't create socket");
     return NULL;
   }
+   struct timeval tv;
+   tv.tv_sec = 60;
+   tv.tv_usec = 0;
+   setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(struct timeval));
+   setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(struct timeval));
+
   if(connect(sockfd, (struct sockaddr *)&to, sizeof(to)) < 0) {
     err0("connect failed");
     return NULL;
