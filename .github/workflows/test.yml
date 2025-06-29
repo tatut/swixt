@@ -19,7 +19,7 @@ jobs:
     - name: wait for xtdb
       uses: iFaxity/wait-on-action@v1.2.1
       with:
-        resource: tcp:localhost:5432
+        resource: tcp:localhost:5433
         timeout: 60000
 
     - name: run tests
