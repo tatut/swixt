@@ -183,7 +183,8 @@ void pg_close(PgConn *c) {
 bool pg_ensure_buf(PgConn *c, size_t extra) {
   size_t wanted = c->buf_pos + extra;
   size_t size = c->buf_size;
-  if(wanted < size) {
+  if(wanted > size) {
+    dbg("wanted %zd, current %zd", wanted, size);
     size_t new_size = c->buf_size * BUFFER_INCREASE_FACTOR;
     size_t increase = new_size - size;
     if(increase < MIN_BUFFER_INCREASE) {
@@ -191,6 +192,7 @@ bool pg_ensure_buf(PgConn *c, size_t extra) {
     } else if(increase > MAX_BUFFER_INCREASE) {
       new_size = size + MAX_BUFFER_INCREASE;
     }
+    dbg("realloc from %zd to %zd", size, new_size);
     char *new_buf = realloc(c->buf, new_size);
     if(new_buf == NULL) {
       err("Unable to allocate more buffer space, at: %zu, need: %zu",
@@ -327,7 +329,15 @@ static bool expect_ready(PgConn *c) {
   return expect_msg(c, 'Z', 5);
 }
 
-void pg_clear(PgConn *c) { c->buf_pos = 0; }
+void pg_clear(PgConn *c) {
+  c->buf_pos = 0;
+  if(c->buf_size > 10*MIN_BUFFER_SIZE) {
+    // if we have an overly large buffer, realloc it to smaller
+    c->buf = realloc(c->buf, MIN_BUFFER_SIZE);
+    if(!c->buf) err0("Unable to reallocate buffer!");
+    c->buf_size = MIN_BUFFER_SIZE;
+  }
+}
 
 /* Issue a query, sends parse and bind messages. */
 PgResult pg_query(PgConn *c, const char* sql, int num_params, int *param_oids,
