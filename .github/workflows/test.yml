@@ -22,6 +22,9 @@ jobs:
         resource: tcp:localhost:5433
         timeout: 60000
 
+    - name: see images
+      run: docker ps
+
     - name: test connection
       run: psql -h localhost -p 5433 xtdb -c "select oid,typname from pg_type"
 
