@@ -1,2 +1,2 @@
 CompileFlags:
-  Add: ["-I/opt/homebrew/include/postgresql@14", "-L/opt/homebrew/lib/postgresql@14", "-I/opt/homebrew/Cellar/swi-prolog/9.2.9/lib/swipl/include", "-L/opt/homebrew/Cellar/swi-prolog/9.2.9/lib/swipl/lib/arm64-darwin"]
+  Add: ["-I/Applications/SWI-Prolog.app/Contents/Resources/swipl/include"]

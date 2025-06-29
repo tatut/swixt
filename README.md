@@ -7,12 +7,15 @@
 This library provides a SWI-Prolog interface to store and query Prolog
 dicts as documents in XTDB.
 
-**WIP: very much alpha as XTDB v2 is also still in early access**
 
-## Usage
+## Quickstart
 
-This library uses the XTDB v2 [HTTP API](https://docs.xtdb.com/drivers/http/openapi/index.html) to
-post transactions and queries.
+- Start XTDB in docker `docker run -p 5433:5432 ghcr.io/xtdb/xtdb:nightly-20250627`
+- Compile the native library with `./build.sh` (or `./build-debug.sh` to enable debug logging)
+- Start SWI-Prolog `swipl -p foreign=. swixt.pl`
+- Connect: `swixt:connect.` (uses default address localhost:5433)
+
+This library uses the binary protocol (postgresql wire protocol) to talk to the XTDB server.
 
 A database row is represented as a [key/value dict](https://www.swi-prolog.org/pldoc/man?section=bidicts)
 Prolog where the tag is the name of the table.
