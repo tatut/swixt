@@ -8,7 +8,7 @@ jobs:
       run: |
         sudo apt-add-repository ppa:swi-prolog/stable
         sudo apt-get update
-        sudo apt-get install swi-prolog
+        sudo apt-get install --yes --no-install-recommends swi-prolog postgresql-client
     - uses: actions/checkout@v2
     - name: start xtdb
       run: docker run -d -tip 5433:5432 ghcr.io/xtdb/xtdb:nightly-20250627
@@ -21,6 +21,9 @@ jobs:
       with:
         resource: tcp:localhost:5433
         timeout: 60000
+
+    - name: test connection
+      run: psql -h localhost -p 5433 xtdb -c "select oid,typname from pg_type"
 
     - name: run tests
       run: for f in *.pl; do swipl -p foreign=. -g run_tests -t halt $f; done
