@@ -1,24 +1,49 @@
-:- module(swixt, [q/2, insert/2, delete/2, status/1, tx/2]).
-:- use_module(xtdb_mapping, [json_prolog/2, to_json/2, string_datetimetz/2]).
+:- module(swixt, [q/1, q/2, insert/2, delete/2, status/1, tx/1]).
 :- use_module(library(yall)).
 :- use_module(library(apply)).
-:- use_module(library(http/http_open)).
-:- use_module(library(http/http_client)).
 :- use_module(library(http/json)).
-:- use_module(library(http/http_json)).
-:- set_prolog_flag(xt_url, 'http://localhost:6543').
+:- set_prolog_flag(xt_connection_info, "host=localhost port=5433").
 :- set_prolog_flag(xt_debug, false).
+:- use_foreign_library(foreign(swixt)).
+:- dynamic xt_connection/2.
 
-xt_post(Path, Json, Results) :-
-    current_prolog_flag(xt_url, BaseUrl),
-    format(atom(Url), '~w/~w', [BaseUrl,Path]),
-    http_open(Url, Stream, [post(json(Json))]),
-    json_read_dict(Stream, Results, [tag('@type'),default_tag(data)]).
+% Convert from Prolog term into a Oid-String representation for postgres API
+xt_type(true, 16-true) :- !.
+xt_type(false, 16-false) :- !.
+xt_type(time(H,M,S,Micros), 1083-Str) :- format(string(Str), '~|~`0t~d~2+:~|~`0t~d~2+:~|~`0t~d~2+.~d', [H,M,S,Micros]), !.
+xt_type(date(Y,M,D), 1082-Str) :- format(string(Str), '~|~`0t~d~4+-~|~`0t~d~2+-~|~`0t~d~2+', [Y,M,D]), !.
+xt_type(X, 701-X) :- float(X), !.
+xt_type(X, 20-X) :- integer(X), !.
+xt_type(X, 25-X) :- string(X), !.
+xt_type(X, 25-X) :- atom(X), !.
+% ^ FIXME: move type case to C side?
+
+
+connect(ConnectionName, ConnectionInfo) :-
+    retractall(xt_connection(ConnectionName,_)),
+    swixt_pg_connect(ConnectionInfo, Conn),
+    asserta(xt_connection(ConnectionName, Conn)).
+
+connect(ConnectionInfo) :- connect(xt_conn, ConnectionInfo).
+
+connect :- current_prolog_flag(xt_connection_info, ConnInfo),
+           connect(ConnInfo).
+
+disconnect(ConnectionName) :-
+    xt_connection(ConnectionName, Conn),
+    swixt_pg_close(Conn),
+    retractall(xt_connection(ConnectionName, Conn)).
+
+disconnect :- disconnect(xt_conn).
+
+
+query(ConnectionName, Sql, Args, Results) :-
+    xt_connection(ConnectionName, Conn),
+    maplist(xt_type, Args, TypedArgs),
+    swixt_pg_query(Conn, Sql, TypedArgs, Results).
 
 query(Sql, Args, Results) :-
-    to_json(Args, JsonArgs),
-    xt_post(query, d{sql: Sql, queryOpts: d{args: JsonArgs}}, Results0),
-    once(json_prolog(Results0, Results)).
+    query(xt_conn, Sql, Args, Results).
 
 to_arg_ref(N,Ref) :- format(atom(Ref), '$~d', [N]).
 
@@ -42,12 +67,13 @@ status(Status) :-
     http_open(Url, Stream, []),
     json_read_dict(Stream, Status, [tag('@type'),default_tag(xt)]).
 
-tx(TxOpCalls, tx{systemTime: SystemTime, id: TxId}) :-
+tx(TxOpCalls) :-
     maplist([TxOpCall,TxOp]>>(call(TxOpCall, TxOp)), TxOpCalls, TxOps),
-    once(json_prolog(TxOpsJson, TxOps)),
-    xt_post(tx, tx{txOps: TxOpsJson}, Result),
-    _{'systemTime': SystemTimeStr, 'txId': TxId} :< Result,
-    string_datetimetz(SystemTimeStr, SystemTime).
+    query("BEGIN", [], _),
+    forall(member(tx{sql: SQL, argRows: [Args]}, TxOps),
+           query(SQL, Args, _Result)),
+    query("COMMIT", [], _).
+
 
 %%% State
 % The state of building a SQL query consists of a dict that contains the
@@ -63,7 +89,13 @@ new_state(Table, q{alias: [a],
                    where: [],
                    order: '',
                    % Only used for subqueries (NEST_MANY or NEST_ONE)
-                   cardinality: 'MANY'}).
+                   cardinality: 'MANY',
+                   bind: unsupported % list of bindings, only supported in q/1
+                  }).
+
+new_state_with(Table, Fields, State) :-
+    new_state(Table, S0),
+    put_dict(Fields, S0, State).
 
 new_state_with(Table, OldState, KeepFields, State) :-
     new_state(Table, S0),
@@ -132,6 +164,7 @@ alias(A) -->
 %% Format state into SQL clause with arguments
 
 to_sql(State, SQL, Args) :-
+    debug(state(State)),
     _{alias: [Alias|_], table: Table, projection: ProjRev, where: Where,
       args: _-ArgsRev, order: OrderBy} :< State,
     reverse(ArgsRev, Args),
@@ -170,9 +203,17 @@ handle([Fv|Fvs]) -->
 
 handle([]) --> [].
 
+handle(Field-Var) -->
+    { ground(Field), var(Var) },
+    aliased_field(Field, Field1),
+    state(S0, S1),
+    { _{bind: Bindings, projection: Projection} :< S0,
+      (Bindings = unsupported -> throw(bindings_unsupported("use q/1")); true),
+      put_dict([bind=[Field-Var|Bindings], projection=[Field1|Projection]], S0, S1) }.
+
 handle(Field-Val) -->
     % Don't handle special fields or nested dictionaries
-    { \+ special_field(Field), \+ is_dict(Val) },
+    { \+ special_field(Field), \+ is_dict(Val), \+ var(Val) },
     where(Field, Val).
 
 handle('_only'-Lst) -->
@@ -210,7 +251,11 @@ handle(Field-Dict) -->
       _{cardinality: Cardinality} :< SubQuery },
     select_('NEST_~w(~w) AS ~w', [Cardinality, SQL, Field]).
 
-
+% Combine where clause and a bind variable
+handle(Field-(Where/Var)) -->
+    { ground(Where), var(Var) },
+    handle(Field-Var),
+    handle(Field-Where).
 
 order_field_dir(Field, Field, 'ASC') :- atom(Field).
 order_field_dir(Field-asc, Field, 'ASC').
@@ -247,10 +292,31 @@ where(Field, (^), [ParentField]) -->
 q(Candidate, Results) :-
     dict_pairs(Candidate, Table, Pairs),
     new_state(Table, S0),
+    once(phrase(handle(Pairs), [S0], [S1])),
+    once(to_sql(S1, SQL, Args)),
+    debug('FINAL_SQL'(SQL)),
+    query(SQL, Args, Results).
+
+% Logical version of query, each row will bind any variables
+% in the candidate fields.
+q(Candidate) :-
+    dict_pairs(Candidate, Table, Pairs),
+    new_state_with(Table, [projection=[], bind=[]], S0),
     phrase(handle(Pairs), [S0], [S1]),
     to_sql(S1, SQL, Args),
     debug('FINAL_SQL'(SQL)),
-    query(SQL, Args, Results).
+    query(SQL, Args, Results),
+    member(Row, Results),
+    _{bind: Bindings} :< S1,
+    maplist({Row}/[Field-Var]>>get_dict(Field, Row, Var), Bindings).
+
+%% PENDING: how about JOINs (apart from NEST_MANY/_ONE use)
+% we could use a logic variable to determine the join condition
+% example:
+% products{'_id': PId, price: P} ^ orderline{product_id: PId, quantity: Q}
+%
+% this get orderline quantity and product price joined by product id
+% what about time?
 
 delete(Candidate, tx{sql: SQL, argRows: [Args]}) :-
     dict_pairs(Candidate, Table, Pairs),
@@ -259,7 +325,7 @@ delete(Candidate, tx{sql: SQL, argRows: [Args]}) :-
     to_sql_delete(S1, SQL, Args),
     debug('FINAL_DELETE_SQL'(SQL)).
 
-update(Candidate, Fields, TxOp) :-
+update(_Candidate, _Fields, _TxOp) :-
     throw(not_implemented_yet("Use raw to do update for now")).
     %% Candidate determines the where clause
     %% and fields is expression to do an update, fixme: what should be supported?
@@ -267,6 +333,11 @@ update(Candidate, Fields, TxOp) :-
     %% at least setting to direct values, like: {value: 42}
     %% what about arithmetic expressions? {value: value * 1.10}
 
+%%
+% aggregates sub query
+% q(products{name: Name,
+%            price: Price,
+%            bought: sum(Bought, quantity, orderline{product_id: ^('_id')})}.
 
 
 %% Raw SQL clause to run.
@@ -279,6 +350,7 @@ raw(SQL, ArgRows, tx{sql: SQL, argRows: ArgRows}).
 :- begin_tests(swixt, [setup(init_test_data)]).
 
 init_test_data :-
+    connect,
     tx([ insert(person{'_id': 1, name: "Max Syöttöpaine"}),
          insert(person{'_id': 2, name: "Barbara Jenkins"}),
 
@@ -288,7 +360,7 @@ init_test_data :-
          insert(todo{'_id': 4, item: "implement operators", done: true}),
          insert(todo{'_id': 5, item: "write tests", done: true, assignee: 1}),
          insert(todo{'_id': 6, item: "gain mass popularity", done: false, assignee: 2})
-       ], _).
+       ]).
 
 test(basic_query_with_id) :-
     q(todo{'_id': 1}, [todo{'_id': 1, item: "make some test data", done: true, assignee: 1}]).
@@ -303,7 +375,10 @@ test(select_only_some_fields) :-
        todo{'_id':6,done:false}]).
 
 test(ordering) :-
-    tx([ raw("INSERT INTO num (_id, n) VALUES ($1, $2)", [[1, 666], [2, -1234], [3, 420], [4, 13]]) ], _),
+    tx([ insert(num{'_id': 1, n: 666}),
+         insert(num{'_id': 2, n: -1234}),
+         insert(num{'_id': 3, n: 420}),
+         insert(num{'_id': 4, n: 13}) ]),
     q(num{'_only': [n], '_order': n}, [ num{n: -1234}, num{n: 13}, num{n: 420}, num{n: 666} ]),
     q(num{'_only': [n], '_order': n-asc}, [ num{n: -1234}, num{n: 13}, num{n: 420}, num{n: 666} ]),
     q(num{'_only': [n], '_order': n-desc}, [ num{n: 666}, num{n: 420},  num{n: 13}, num{n: -1234} ]),
@@ -332,6 +407,6 @@ ex(todo{done: false,
      todo{'_id':6, assigned:person{'_id':2, name:"Barbara Jenkins"}, assignee:2, done:false, item:"gain mass popularity"}]).
 
 
-test(queries, [forall(ex(Candidate,Results))]) :- q(Candidate,Results).
+test(queries, [forall(ex(Candidate,Results))]) :- once(q(Candidate,Results)).
 
 :- end_tests(swixt).
