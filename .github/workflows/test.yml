@@ -11,7 +11,7 @@ jobs:
         sudo apt-get install --yes --no-install-recommends swi-prolog postgresql-client
     - uses: actions/checkout@v2
     - name: start xtdb
-      run: docker run -d -tip 5433:5432 ghcr.io/xtdb/xtdb:nightly-20250627
+      run: docker run -p 5433:5432 ghcr.io/xtdb/xtdb:nightly-20250627 &
 
     - name: build foreign library
       run: ./build-debug.sh
