@@ -23,11 +23,6 @@
 #include "json.h"
 #include "util.h"
 
-#define expect(expr)                                                           \
-  if (!(expr))                                                          \
-  return false
-
-
 void skipws(char **at) {
   char c = **at;
   while(c == ' ' || c == '\t' || c == '\n' || c == '\r') {

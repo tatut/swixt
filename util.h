@@ -1,6 +1,11 @@
 #ifndef util_h
 #define util_h
 
+#define expect(expr)                                                           \
+  if (!(expr))                                                                 \
+    return false
+
+
 #include "SWI-Stream.h"
 
 #ifdef DEBUG

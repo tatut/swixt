@@ -15,27 +15,41 @@
 #include "pgwire.h"
 #include "util.h"
 
+/* Read to given memory */
+static bool read_to(PgConn *c, char *to, size_t bytes) {
+  ssize_t count = read(c->sockfd, to, bytes);
+  if(count != bytes) {
+    err("Could not read from socket, expected %d bytes, got %d.", bytes, count);
+    return false;
+  }
+  return true;
+}
+
+/* Read to connection buffer, incrementing its position.
+ * Sets *data_out to start of read bytes.
+ */
+static bool read_buf(PgConn *c, size_t bytes, char **data_out) {
+  expect(pg_ensure_buf(c, bytes));
+  char *data = &c->buf[c->buf_pos];
+  expect(read_to(c, data, bytes));
+  //dbg("  read %zd bytes to %s", bytes, data);
+  c->buf_pos += bytes;
+  *data_out = data;
+  return true;
+}
+
 /* Read message from connection socket into *msg.
  * The payload data is stored in connection buffer.
  */
 static bool read_msg(PgConn *c, PgMessage *msg) {
   char hdr[5];
-  if(read(c->sockfd, hdr, 5) != 5) {
-    err0("Could not read from socket.");
-    return false;
-  }
+  expect(read_to(c, hdr, 5));
   msg->type = hdr[0];
   msg->len = ntohl(*((int32_t*)&hdr[1])) - 4;
-  if(!pg_ensure_buf(c, msg->len)) return false;
-  char *data = &c->buf[c->buf_pos];
-  ssize_t r = read(c->sockfd, data, msg->len);
-  if(r < msg->len) {
-    err("Could not read from socket (%zd < %d).", r, msg->len);
-    return false;
-  }
+  char *data;
   msg->data = c->buf_pos;
   msg->read = c->buf_pos;
-  c->buf_pos += msg->len;
+  expect(read_buf(c, msg->len, &data));
   return true;
 }
 
@@ -44,7 +58,7 @@ bool read_startup_messages(PgConn *c) {
   PgMessage m;
   size_t buf_pos = c->buf_pos;
   while(m.type != 'Z') {
-    if(!read_msg(c, &m)) return false;
+    expect(read_msg(c, &m));
     switch(m.type) {
     case 'R': { // auth status
       int status;
@@ -145,6 +159,7 @@ PgConn *pg_connect(char *conn_info) {
     return NULL;
   }
 
+  // FIXME: cleanup and use new put_* macros here
   int len = 4+4+5+5+9+5+1;// int32, int32, "user\0", "xtdb\0", "database\0", "xtdb\0", \0
   char buf[len];
   *((int32_t*)&buf[0]) = htonl(len);
