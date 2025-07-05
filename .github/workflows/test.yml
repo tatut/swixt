@@ -17,8 +17,5 @@ jobs:
         sudo apt-get install --yes --no-install-recommends swi-prolog
     - uses: actions/checkout@v2
 
-    - name: build foreign library
-      run: ./build-debug.sh
-
     - name: run tests
-      run: for f in *.pl; do swipl -p foreign=. -g run_tests -t halt $f; done
+      run: ./test.sh
