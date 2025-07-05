@@ -159,18 +159,6 @@ PgConn *pg_connect(char *conn_info) {
     return NULL;
   }
 
-  // FIXME: cleanup and use new put_* macros here
-  int len = 4+4+5+5+9+5+1;// int32, int32, "user\0", "xtdb\0", "database\0", "xtdb\0", \0
-  char buf[len];
-  *((int32_t*)&buf[0]) = htonl(len);
-  *((int32_t*)&buf[4]) = htonl(196608); // protocol version
-  memcpy(&buf[8], "user\0xtdb\0database\0xtdb\0", 24);
-  buf[32] = 0;
-  if(write(sockfd, buf, len) != len) {
-    err0("Couldn't write startup message");
-    goto fail;
-  }
-
   PgConn *c = malloc(sizeof(PgConn));
   c->sockfd = sockfd;
 
@@ -179,6 +167,19 @@ PgConn *pg_connect(char *conn_info) {
   if(c->buf == NULL) goto fail;
   c->buf_pos = 0;
   c->buf_size = MIN_BUFFER_SIZE;
+
+  // FIXME: cleanup and use new put_* macros here
+  mark_len(c);
+  //int len = 4+4+5+5+9+5+1;// int32, int32, "user\0", "xtdb\0", "database\0", "xtdb\0", \0
+  put_i32(c, 196608); // protocol version;
+  put_string(c, "user");
+  put_string(c, "xtdb");
+  put_string(c, "database");
+  put_string(c, "xtdb");
+  put_ch(c, 0);
+  update_len(c);
+
+  if(!pg_send(c)) goto fail;
   if(!read_startup_messages(c)) goto fail;
   return c;
 
@@ -222,7 +223,7 @@ bool pg_ensure_buf(PgConn *c, size_t extra) {
 }
 
 /* Send current buffer */
-static bool pg_send(PgConn *c) {
+bool pg_send(PgConn *c) {
   if(!write(c->sockfd, c->buf, c->buf_pos)) {
     err("Unable to write %zu bytes to socket.", c->buf_size);
     return false;

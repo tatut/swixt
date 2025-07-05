@@ -43,6 +43,9 @@ typedef struct PgVal {
 PgConn *pg_connect(char *conn_info);
 void pg_close(PgConn *conn);
 
+/* Send current buffer to socket, reset buffer. */
+bool pg_send(PgConn *conn);
+
 /* Clear all memory buffers. All results and rows are invalid. */
 void pg_clear(PgConn *conn);
 
