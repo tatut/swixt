@@ -71,7 +71,7 @@ PgVal pg_value(PgConn *c, PgResult *res, int field);
 
 #define MIN_BUFFER_SIZE 512
 #define MIN_BUFFER_INCREASE 512
-#define MAX_BUFFER_INCREASE (1024*1024)
+#define MAX_BUFFER_INCREASE (5*1024*1024)
 #define BUFFER_INCREASE_FACTOR 1.618
 
 

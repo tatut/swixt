@@ -205,7 +205,8 @@ bool pg_ensure_buf(PgConn *c, size_t extra) {
     if(increase < MIN_BUFFER_INCREASE) {
       new_size = size + MIN_BUFFER_INCREASE;
     } else if(increase > MAX_BUFFER_INCREASE) {
-      new_size = size + MAX_BUFFER_INCREASE;
+      // if some huge increase is coming, only increase by wanted amount
+      new_size = wanted;
     }
     dbg("realloc from %zd to %zd", size, new_size);
     char *new_buf = realloc(c->buf, new_size);
