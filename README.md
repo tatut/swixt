@@ -58,7 +58,7 @@ R = [orders{'_id':1,
 
 ### Transactions
 
-The `tx` goal takes a list of transaction operations and a result.
+The `tx` goal takes a list of transaction operations.
 
 Supported transaction operations currently are:
 - `insert` inserts a dict as a table row
@@ -71,6 +71,5 @@ Example:
 ```prolog
 tx([ insert(todo{'_id': 100, item: "do something", done: false}),
      delete(todo{done: true, completed: <(date(2020,1,1))}),
-     raw("UPDATE todo SET done=true WHERE _id=$1", [[1], [42]]) ], R).
-R = tx{id:..., systemTime:datetimetz(2024, ...)}.
+     raw("UPDATE todo SET done=true WHERE _id=$1", [[1], [42]]) ]).
 ```
